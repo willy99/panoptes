@@ -1,0 +1,11 @@
+# Agent skills are third-party tooling, not part of the submission.
+.claude/
+
+# Personal notes, never part of the submission.
+tooling-mishaps.md
+architecture-uk.pdf
+to-questionnaire-district-cyber.md
+
+# Local working material. Specs and tickets under .scratch/<feature>/ are tracked.
+.scratch/assignment.txt
+.scratch/architecture/
