@@ -82,7 +82,7 @@ _Avoid_: closed, finished
 Why an episode settled: `quiet` when the quiet window passed with no further events, `max_duration` when an event started the next chapter.
 
 **Silence**:
-How long the service has received no new event for an episode key, by the service's own clock. Silence, not device time, decides when an open episode settles.
+How long ago, by the service's own clock, the latest of an episode's events arrived. Silence, not device time, decides when an open episode settles.
 _Avoid_: inactivity, timeout
 
 **Settle grace**:
