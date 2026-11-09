@@ -10,4 +10,6 @@
 - [ ] End-to-end, one case per class (not JSON; each required field missing, null, empty or of the wrong type; unknown kind; unknown severity; bad timestamp; a dot in `site_id`; a dot in `camera_id`): the counter rises by exactly one and nothing is stored.
 - [ ] End-to-end: a valid event published after a batch of invalid ones is stored, and after a further wait the counter has not grown, so nothing was redelivered.
 - [ ] End-to-end: an event whose subject names a different camera than its payload is stored under the payload's ids.
+- [ ] End-to-end: a payload that is not valid UTF-8, an `event_id` containing `\u0000`, and an `event_id` longer than 255 bytes are counted as invalid. Before this ticket, the second failed its insert on every delivery (`SQLSTATE 22021`) until MaxDeliver ran out.
+- [ ] End-to-end: `occurred_at` with a lowercase `t` and `z` is valid, and one with a comma before the fraction is not.
 - [ ] End-to-end: missing `attributes` is returned as an empty object, and an `attributes` value that is not an object is returned as given.

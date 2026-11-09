@@ -104,6 +104,10 @@ Panoptes consumes the event stream and groups events into episodes by episode ke
 - `occurred_at` must be RFC 3339. Any offset is accepted and normalised to UTC. Precision is kept to the microsecond, which is what Postgres stores.
 - `site_id` and `camera_id` must be valid NATS subject tokens: no `.`, `*`, `>` or whitespace.
 - `event_id` must be non-empty. It is not checked to be a ULID, since the brief lists only missing fields and unknown sets as invalid.
+- The payload must be valid UTF-8, and no string field may contain U+0000. Postgres text cannot store either, so such an event would fail its insert on every delivery and never be counted.
+- `event_id`, `site_id` and `camera_id` are at most 255 bytes, so that they always fit a btree index entry.
+- `occurred_at` follows RFC 3339 exactly: `T` and `Z` in either case, a fraction only after a dot.
+- As a backstop, an insert that Postgres rejects for the data itself (SQLSTATE classes 22 and 54) is treated as an invalid event: acknowledged and counted, not retried.
 - `attributes` is stored as given, whatever JSON value it is. When missing it is stored as an empty object.
 - Unknown extra fields are ignored. Subject tokens are not used for decoding. When they disagree with the payload, the payload wins and a warning is logged.
 - Invalid events are acknowledged, counted and logged with the reason, the subject and the first 256 bytes of the payload. They are not persisted.
@@ -149,7 +153,7 @@ What a kill does at each step: a kill before the commit rolls everything back an
 
 ### Schema
 
-- **events:** `event_id` primary key, episode key fields, severity rank, device time, attributes as JSONB, arrival time, and the id of the episode it belongs to. Indexed by episode and device time, and by episode key and device time.
+- **events:** `event_id` primary key, episode key fields, severity rank, device time, attributes as `json` (which keeps the device's text; `jsonb` reorders keys and rejects `\u0000`), arrival time, and the id of the episode it belongs to. Indexed by episode and device time, and by episode key and device time.
 - **episodes:** UUID id, episode key fields, status, first seen, last seen, event count, peak severity rank, close reason, `settled_at`, revision, the latest arrival time among its events, and, for open episodes, the pending close reason when it has ended by device time. Indexed for the list query (first seen and id, descending, with the filters) and with a partial index on open episodes by latest arrival for the settle sweep.
 - **outbox:** serial id, episode id, subject, unique message id, payload, created and published times, with a partial index on unpublished rows.
 - Migrations are plain SQL embedded in the binary and applied at startup under a session advisory lock, each in its own transaction. Concurrent instances therefore never race.
