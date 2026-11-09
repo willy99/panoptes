@@ -1,5 +1,5 @@
 // Package api serves the service's HTTP endpoints: the episode queries,
-// liveness and readiness. Metrics join it in a later ticket.
+// metrics, liveness and readiness.
 package api
 
 import (
@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"panoptes/internal/metrics"
 	"panoptes/internal/store"
 )
 
@@ -23,6 +24,7 @@ const readinessTimeout = 2 * time.Second
 func NewHandler(st *store.Store, ready ReadinessCheck, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.HandleFunc("GET /episodes", listEpisodes(st, log))
 	mux.HandleFunc("GET /episodes/{id}", getEpisode(st, log))
 	// Any other path under /episodes/, such as /episodes/ or /episodes/a/b,

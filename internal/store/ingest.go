@@ -5,14 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"time"
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"panoptes/internal/correlation"
 	"panoptes/internal/event"
 )
+
+// ErrRejected wraps an insert that Postgres refused because of the event's
+// own data. The codec should catch every such event first; this is the
+// backstop, so that one it missed is skipped instead of failing on every
+// delivery.
+var ErrRejected = errors.New("postgres rejected the event")
 
 // Outcome is what Ingest did with an event.
 type Outcome struct {
@@ -65,6 +73,12 @@ func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
 		return Outcome{Duplicate: true}, tx.Commit(ctx)
 	}
 	if err != nil {
+		var pgErr *pgconn.PgError
+		// Class 22 is data exceptions, class 54 program limits such as an
+		// index entry that is too long.
+		if errors.As(err, &pgErr) && (strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "54")) {
+			return Outcome{}, fmt.Errorf("%w: %v", ErrRejected, err)
+		}
 		return Outcome{}, fmt.Errorf("insert event: %w", err)
 	}
 

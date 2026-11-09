@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"panoptes/internal/event"
+	"panoptes/internal/metrics"
 	"panoptes/internal/store"
 )
 
@@ -80,16 +81,21 @@ func sleep(ctx context.Context, d time.Duration) bool {
 func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.Logger) bool {
 	ev, err := event.Decode(msg.Data())
 	if err != nil {
-		// It can never become an event, so redelivering it would change
-		// nothing: acknowledge it and move on.
-		log.Warn("invalid event", "reason", err.Error(), "subject", msg.Subject())
-		ack(msg, log)
+		skipInvalid(msg, err, log)
 		return true
+	}
+	if ev.Subject() != msg.Subject() {
+		log.Warn("subject disagrees with payload; the payload wins",
+			"subject", msg.Subject(), "event_id", ev.ID, "payload_subject", ev.Subject())
 	}
 
 	txCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), txTimeout)
 	defer cancel()
 	out, err := st.Ingest(txCtx, ev)
+	if errors.Is(err, store.ErrRejected) {
+		skipInvalid(msg, err, log)
+		return true
+	}
 	if err != nil {
 		// The transaction rolled back, so nothing was stored. The message is
 		// left unacknowledged and comes back after AckWait. A nak would bring
@@ -112,6 +118,19 @@ func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.L
 		"site_id", ev.Key.SiteID, "camera_id", ev.Key.CameraID, "kind", ev.Key.Kind,
 		"event_id", ev.ID, "episode_id", out.EpisodeID.String())
 	return true
+}
+
+// skipInvalid acknowledges, counts and logs a message that can never become
+// an event. Redelivering it would change nothing, so it must not hold up the
+// stream or use up its deliveries.
+func skipInvalid(msg jetstream.Msg, reason error, log *slog.Logger) {
+	ack(msg, log)
+	metrics.InvalidEvents.Inc()
+	payload := msg.Data()
+	if len(payload) > 256 {
+		payload = payload[:256]
+	}
+	log.Warn("invalid event", "reason", reason.Error(), "subject", msg.Subject(), "payload", string(payload))
 }
 
 func ack(msg jetstream.Msg, log *slog.Logger) {

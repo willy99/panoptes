@@ -4,8 +4,13 @@ package event
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // EpisodeKey is the site, camera and kind that events must share to belong to
@@ -63,12 +68,32 @@ type Event struct {
 	Attributes json.RawMessage // exactly as the device sent it
 }
 
+// Subject is the subject the event belongs on. Its tokens come from the
+// payload, which wins when the subject it arrived on disagrees.
+func (e Event) Subject() string {
+	return "analytics.event.v1." + e.Key.SiteID + "." + e.Key.CameraID + "." + e.Key.Kind
+}
+
 // required are the payload fields that must be non-empty strings.
 var required = []string{"event_id", "site_id", "camera_id", "kind", "severity", "occurred_at"}
+
+// maxIDLength caps event_id, site_id and camera_id, so that they always fit an
+// index entry; Postgres refuses entries of more than about 2.7 kB.
+const maxIDLength = 255
+
+// rfc3339 is the exact shape RFC 3339 allows. Go's parser alone is both
+// stricter (it refuses a lowercase t or z) and looser (it takes a comma
+// before the fraction).
+var rfc3339 = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$`)
 
 // Decode turns a message payload into an event, or returns the reason it
 // cannot be one.
 func Decode(payload []byte) (Event, error) {
+	// Postgres stores only valid UTF-8, and encoding/json would quietly
+	// replace bad bytes inside strings but keep them inside attributes.
+	if !utf8.Valid(payload) {
+		return Event{}, errors.New("not valid UTF-8")
+	}
 	// A map rather than a struct, because encoding/json matches struct fields
 	// without regard to case: "Event_ID" would pass for "event_id".
 	var fields map[string]json.RawMessage
@@ -88,7 +113,22 @@ func Decode(payload []byte) (Event, error) {
 		if v == "" {
 			return Event{}, fmt.Errorf("%s is empty", name)
 		}
+		if strings.ContainsRune(v, 0) {
+			// Postgres text cannot hold U+0000.
+			return Event{}, fmt.Errorf("%s contains U+0000", name)
+		}
 		s[name] = v
+	}
+	for _, name := range []string{"event_id", "site_id", "camera_id"} {
+		if len(s[name]) > maxIDLength {
+			return Event{}, fmt.Errorf("%s is longer than %d bytes", name, maxIDLength)
+		}
+	}
+	// Every stored episode must be announceable on a subject built from these.
+	for _, name := range []string{"site_id", "camera_id"} {
+		if strings.ContainsFunc(s[name], notSubjectToken) {
+			return Event{}, fmt.Errorf("%s %q cannot be a NATS subject token", name, s[name])
+		}
 	}
 
 	if !kinds[s["kind"]] {
@@ -98,9 +138,12 @@ func Decode(payload []byte) (Event, error) {
 	if !ok {
 		return Event{}, fmt.Errorf("unknown severity %q", s["severity"])
 	}
-	occurredAt, err := time.Parse(time.RFC3339Nano, s["occurred_at"])
-	if err != nil {
+	if !rfc3339.MatchString(s["occurred_at"]) {
 		return Event{}, fmt.Errorf("occurred_at %q is not an RFC 3339 timestamp", s["occurred_at"])
+	}
+	occurredAt, err := time.Parse(time.RFC3339Nano, strings.ToUpper(s["occurred_at"]))
+	if err != nil {
+		return Event{}, fmt.Errorf("occurred_at %q is not a valid time: %w", s["occurred_at"], err)
 	}
 
 	attributes := fields["attributes"]
@@ -114,4 +157,9 @@ func Decode(payload []byte) (Event, error) {
 		OccurredAt: occurredAt.UTC().Truncate(time.Microsecond),
 		Attributes: attributes,
 	}, nil
+}
+
+// notSubjectToken reports the runes a NATS subject token cannot contain.
+func notSubjectToken(r rune) bool {
+	return r == '.' || r == '*' || r == '>' || unicode.IsSpace(r)
 }
