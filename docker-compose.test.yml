@@ -1,0 +1,31 @@
+# The test stack for `make test`. It is a separate compose project with its own
+# NATS and Postgres, so tests never touch the stack started by `make up`, and it
+# publishes no ports, so both can run at the same time.
+name: panoptes-test
+
+services:
+  nats:
+    extends: { file: docker-compose.yml, service: nats }
+
+  postgres:
+    extends: { file: docker-compose.yml, service: postgres }
+
+  test:
+    image: golang:1.27
+    working_dir: /src
+    volumes:
+      - .:/src
+      - gomod:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+    environment:
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgres://panoptes@postgres:5432/panoptes?sslmode=disable
+    depends_on:
+      nats: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    command: ["go", "test", "-count=1", "./..."]
+
+# Module and build caches survive between runs; NATS and Postgres start empty every time.
+volumes:
+  gomod:
+  gocache:
