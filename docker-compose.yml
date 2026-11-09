@@ -25,8 +25,9 @@ services:
       timeout: 2s
       retries: 30
 
-  panoptes:
+  panoptes: &panoptes
     build: .
+    image: panoptes:local
     environment:
       DATABASE_URL: postgres://panoptes@postgres:5432/panoptes?sslmode=disable
       # NATS_URL, HTTP_ADDR and the EPISODE_* durations keep their defaults; set them here to change them.
@@ -37,3 +38,12 @@ services:
       postgres: { condition: service_healthy }
     # SIGTERM first, SIGKILL only after 30s: the service's own shutdown deadline is 20s.
     stop_grace_period: 30s
+
+  # A second, identical instance for the multi-instance demo:
+  # `docker compose --profile multi up`. It shares the consumer and the
+  # database with the first and needs no other configuration.
+  panoptes-2:
+    <<: *panoptes
+    ports:
+      - "8081:8080"
+    profiles: [multi]

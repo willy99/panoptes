@@ -133,6 +133,8 @@ func (s *scenario) waitAllSettled(p *proc) {
 //     episode, and none for an open one.
 func (s *scenario) checkInvariants(p *proc) {
 	s.t.Helper()
+	// Every settled episode's announcement has left the outbox.
+	waitFor(s.t, 10*time.Second, "the outbox to empty", func() bool { return p.metric("panoptes_outbox_pending") == 0 })
 	var episodes []episodeJSON
 	cursor := ""
 	for {
