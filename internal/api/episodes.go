@@ -3,11 +3,16 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 	"uuid"
 
+	"panoptes/internal/event"
 	"panoptes/internal/store"
 )
 
@@ -78,21 +83,84 @@ func formatTime(t time.Time) string {
 	return t.Format("2006-01-02T15:04:05.000000Z")
 }
 
-// listEpisodes serves GET /episodes. For now it filters on site_id only and
-// returns every match on one page.
+// Page sizes from the brief: a limit above the maximum is clamped, not refused.
+const (
+	defaultLimit = 50
+	maxLimit     = 200
+)
+
+// listEpisodes serves GET /episodes: filters, then one page of the list in
+// its total order, with a cursor to the next page when there is one.
 func listEpisodes(st *store.Store, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		episodes, err := st.Episodes(r.Context(), r.URL.Query().Get("site_id"))
+		f, err := parseFilter(r.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		limit := f.Limit
+		f.Limit++ // one more than the page, to learn whether another page follows
+		episodes, err := st.Episodes(r.Context(), f)
 		if err != nil {
 			internalError(w, log, err)
 			return
 		}
-		out := make([]episodeJSON, 0, len(episodes)) // an empty list is [], never null
-		for _, e := range episodes {
-			out = append(out, toEpisodeJSON(e))
+		resp := listResponse{Episodes: make([]episodeJSON, 0, limit)} // an empty list is [], never null
+		if len(episodes) > limit {
+			episodes = episodes[:limit]
+			last := episodes[limit-1]
+			resp.NextCursor = encodeCursor(store.Position{FirstSeen: last.FirstSeen, ID: last.ID})
 		}
-		writeJSON(w, http.StatusOK, listResponse{Episodes: out})
+		for _, e := range episodes {
+			resp.Episodes = append(resp.Episodes, toEpisodeJSON(e))
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+// parseFilter reads the list's query parameters. An empty parameter counts as
+// absent; anything malformed is the client's mistake and gets a 400.
+func parseFilter(q url.Values) (store.Filter, error) {
+	f := store.Filter{
+		SiteID:   q.Get("site_id"),
+		CameraID: q.Get("camera_id"),
+		Kind:     q.Get("kind"),
+		Status:   q.Get("status"),
+		Limit:    defaultLimit,
+	}
+	if f.Kind != "" && !event.IsKind(f.Kind) {
+		return f, fmt.Errorf("kind %q is not one of person_detected, loitering, line_crossed, tamper", f.Kind)
+	}
+	if f.Status != "" && f.Status != "open" && f.Status != "settled" {
+		return f, fmt.Errorf("status %q is not open or settled", f.Status)
+	}
+	for name, dst := range map[string]*time.Time{"from": &f.From, "to": &f.To} {
+		if v := q.Get(name); v != "" {
+			t, err := event.ParseTime(v)
+			if err != nil {
+				return f, fmt.Errorf("%s: %w", name, err)
+			}
+			*dst = t
+		}
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(v, "-") {
+			n, err = maxLimit, nil // a positive number too big for an int is still above the maximum
+		}
+		if err != nil || n < 1 {
+			return f, fmt.Errorf("limit %q is not a positive integer", v)
+		}
+		f.Limit = min(n, maxLimit)
+	}
+	if v := q.Get("cursor"); v != "" {
+		p, err := decodeCursor(v)
+		if err != nil {
+			return f, err
+		}
+		f.After = &p
+	}
+	return f, nil
 }
 
 // getEpisode serves GET /episodes/{id}. An id that is not a UUID cannot name an

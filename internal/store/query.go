@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"uuid"
 
@@ -38,13 +39,54 @@ func scanEpisode(row pgx.Row) (Episode, error) {
 	return e, err
 }
 
-// Episodes lists episodes newest first: by first seen, then by id, both
-// descending. An empty siteID lists every site.
-func (s *Store) Episodes(ctx context.Context, siteID string) ([]Episode, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT `+episodeColumns+` FROM episodes
-		WHERE $1 = '' OR site_id = $1
-		ORDER BY first_seen DESC, id DESC`, siteID)
+// Filter selects episodes for the list. A zero field does not filter.
+type Filter struct {
+	SiteID, CameraID, Kind, Status string
+	From, To                       time.Time // first seen: From inclusive, To exclusive
+	After                          *Position // only episodes after this place in the order
+	Limit                          int
+}
+
+// Position is a place in the list's order: first seen, then id, both
+// descending.
+type Position struct {
+	FirstSeen time.Time
+	ID        uuid.UUID
+}
+
+// Episodes lists up to f.Limit episodes that match f, newest first: by first
+// seen, then by id, both descending, so that the order is total and a page
+// can start exactly after the last row of the one before.
+func (s *Store) Episodes(ctx context.Context, f Filter) ([]Episode, error) {
+	var where []string
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	for _, c := range []struct{ column, value string }{
+		{"site_id", f.SiteID}, {"camera_id", f.CameraID}, {"kind", f.Kind}, {"status", f.Status},
+	} {
+		if c.value != "" {
+			where = append(where, c.column+" = "+arg(c.value))
+		}
+	}
+	if !f.From.IsZero() {
+		where = append(where, "first_seen >= "+arg(f.From))
+	}
+	if !f.To.IsZero() {
+		where = append(where, "first_seen < "+arg(f.To))
+	}
+	if f.After != nil {
+		where = append(where, "(first_seen, id) < ("+arg(f.After.FirstSeen)+", "+arg(f.After.ID)+")")
+	}
+	query := `SELECT ` + episodeColumns + ` FROM episodes`
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY first_seen DESC, id DESC LIMIT " + arg(f.Limit)
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list episodes: %w", err)
 	}

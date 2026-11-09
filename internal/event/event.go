@@ -138,12 +138,9 @@ func Decode(payload []byte) (Event, error) {
 	if !ok {
 		return Event{}, fmt.Errorf("unknown severity %q", s["severity"])
 	}
-	if !rfc3339.MatchString(s["occurred_at"]) {
-		return Event{}, fmt.Errorf("occurred_at %q is not an RFC 3339 timestamp", s["occurred_at"])
-	}
-	occurredAt, err := time.Parse(time.RFC3339Nano, strings.ToUpper(s["occurred_at"]))
+	occurredAt, err := ParseTime(s["occurred_at"])
 	if err != nil {
-		return Event{}, fmt.Errorf("occurred_at %q is not a valid time: %w", s["occurred_at"], err)
+		return Event{}, fmt.Errorf("occurred_at: %w", err)
 	}
 
 	attributes := fields["attributes"]
@@ -154,10 +151,26 @@ func Decode(payload []byte) (Event, error) {
 		ID:         s["event_id"],
 		Key:        EpisodeKey{SiteID: s["site_id"], CameraID: s["camera_id"], Kind: s["kind"]},
 		Severity:   severity,
-		OccurredAt: occurredAt.UTC().Truncate(time.Microsecond),
+		OccurredAt: occurredAt,
 		Attributes: attributes,
 	}, nil
 }
+
+// ParseTime parses an RFC 3339 timestamp into UTC, cut to the microseconds
+// Postgres keeps.
+func ParseTime(s string) (time.Time, error) {
+	if !rfc3339.MatchString(s) {
+		return time.Time{}, fmt.Errorf("%q is not an RFC 3339 timestamp", s)
+	}
+	t, err := time.Parse(time.RFC3339Nano, strings.ToUpper(s))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%q is not a valid time: %w", s, err)
+	}
+	return t.UTC().Truncate(time.Microsecond), nil
+}
+
+// IsKind reports whether kind is one of the brief's detection kinds.
+func IsKind(kind string) bool { return kinds[kind] }
 
 // notSubjectToken reports the runes a NATS subject token cannot contain.
 func notSubjectToken(r rune) bool {
