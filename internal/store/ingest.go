@@ -96,7 +96,7 @@ func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
 	}
 
 	added := correlation.Event{ID: ev.ID, OccurredAt: ev.OccurredAt, Severity: ev.Severity, ArrivedAt: arrivedAt}
-	episodes, gone := correlation.Rebuild(s.rules, append(open, added), settled, uuid.NewV4)
+	episodes, gone := correlation.Rebuild(s.rules.Settings, append(open, added), settled, uuid.NewV4)
 
 	var joined uuid.UUID
 	for _, ep := range episodes {

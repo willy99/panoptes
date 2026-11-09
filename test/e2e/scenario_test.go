@@ -185,3 +185,51 @@ func (s *scenario) episode(p *proc, id string) (episodeJSON, []eventJSON) {
 	p.getJSON("/episodes/"+id, http.StatusOK, &body)
 	return body.Episode, body.Events
 }
+
+// announcement is one message on the episode stream.
+type announcement struct {
+	Subject string
+	MsgID   string
+	Fields  map[string]json.RawMessage
+}
+
+// announcements reads every announcement for the scenario's site from the
+// start of the stream, the way the grading suite does: a JetStream consumer
+// filtered to the site. It stops once no message has come for a moment.
+func (s *scenario) announcements() []announcement {
+	s.t.Helper()
+	stream, err := s.js.StreamNameBySubject(ctx(s.t), "episode.settled."+s.site+".x")
+	if err != nil {
+		s.t.Fatalf("find the stream for episode.settled: %v", err)
+	}
+	consumer, err := s.js.OrderedConsumer(ctx(s.t), stream, jetstream.OrderedConsumerConfig{
+		FilterSubjects: []string{"episode.settled." + s.site + ".>", "episode.corrected." + s.site + ".>"},
+	})
+	if err != nil {
+		s.t.Fatalf("ordered consumer on %s: %v", stream, err)
+	}
+	var out []announcement
+	for {
+		msg, err := consumer.Next(jetstream.FetchMaxWait(500 * time.Millisecond))
+		if err != nil {
+			return out
+		}
+		a := announcement{Subject: msg.Subject(), MsgID: msg.Headers().Get("Nats-Msg-Id")}
+		if err := json.Unmarshal(msg.Data(), &a.Fields); err != nil {
+			s.t.Fatalf("announcement on %s is not a JSON object: %s", msg.Subject(), msg.Data())
+		}
+		out = append(out, a)
+	}
+}
+
+// waitFor polls cond until it holds or the timeout passes.
+func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not happen within %v", what, timeout)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

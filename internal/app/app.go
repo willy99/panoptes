@@ -20,6 +20,8 @@ import (
 	"panoptes/internal/config"
 	"panoptes/internal/correlation"
 	"panoptes/internal/ingest"
+	"panoptes/internal/relay"
+	"panoptes/internal/settle"
 	"panoptes/internal/store"
 )
 
@@ -37,7 +39,10 @@ type app struct {
 // Run starts the service and blocks until ctx is cancelled, then shuts down
 // gracefully. It returns an error only when the service cannot run at all.
 func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
-	st, err := store.Open(cfg.DatabaseURL, correlation.Settings{QuietWindow: cfg.QuietWindow, MaxDuration: cfg.MaxDuration})
+	st, err := store.Open(cfg.DatabaseURL, store.Rules{
+		Settings:    correlation.Settings{QuietWindow: cfg.QuietWindow, MaxDuration: cfg.MaxDuration},
+		SettleGrace: cfg.SettleGrace,
+	})
 	if err != nil {
 		return err
 	}
@@ -80,6 +85,8 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if retry(loopCtx, log, "migrate the database", st.Migrate) == nil &&
 		retry(loopCtx, log, "provision the streams", provision) == nil {
 		loops.Go(func() { ingest.Run(loopCtx, consumer, st, log) })
+		loops.Go(func() { settle.Run(loopCtx, st, log) })
+		loops.Go(func() { relay.Run(loopCtx, st, js, log) })
 		a.started.Store(true)
 		log.Info("ready")
 	}

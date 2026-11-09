@@ -1,11 +1,12 @@
 // Package store owns every Postgres access of the service: the connection
-// pool, the schema migrations, the ingest transaction and the queries behind
-// the API. Callers never see SQL.
+// pool, the schema migrations, the ingest and settle transactions, the
+// outbox and the queries behind the API. Callers never see SQL.
 package store
 
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -15,18 +16,23 @@ import (
 // Store is the service's handle on Postgres.
 type Store struct {
 	pool  *pgxpool.Pool
-	rules correlation.Settings
+	rules Rules
+}
+
+// Rules are the windows the store's transactions apply.
+type Rules struct {
+	correlation.Settings               // how the ingest transaction groups events
+	SettleGrace          time.Duration // the silence that settles an episode that has ended by device time
 }
 
 // minPoolSize is the smallest pool the service runs with: one connection for
-// each of the four ingest workers, plus room for the API's reads. A larger
-// pool_max_conns in DATABASE_URL is kept.
-const minPoolSize = 8
+// each of the four ingest workers, the settle loop and the relay, plus room
+// for the API's reads. A larger pool_max_conns in DATABASE_URL is kept.
+const minPoolSize = 10
 
 // Open creates the connection pool. It does not connect yet: the first query
-// does, so Open succeeds even while Postgres is still starting. The rules are
-// the windows the ingest transaction groups events by.
-func Open(databaseURL string, rules correlation.Settings) (*Store, error) {
+// does, so Open succeeds even while Postgres is still starting.
+func Open(databaseURL string, rules Rules) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
