@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"panoptes/internal/contract"
 	"panoptes/internal/correlation"
 	"panoptes/internal/event"
 )
@@ -26,9 +27,10 @@ var ErrRejected = errors.New("postgres rejected the event")
 type Outcome struct {
 	Duplicate bool      // the event_id was already stored, so nothing changed
 	EpisodeID uuid.UUID // the episode the event joined; zero for a duplicate
+	Revision  int       // set when the event joined a settled episode as a correction
 }
 
-// Ingest stores one event and rebuilds its key's open episodes, in one
+// Ingest stores one event and updates its key's episodes, in one
 // transaction:
 //
 //  1. Take the episode key's transaction lock. Everything that changes a key's
@@ -37,11 +39,14 @@ type Outcome struct {
 //     stored, nothing is inserted: the event is a duplicate, and Ingest
 //     commits and returns. The first stored copy wins, even when a later copy
 //     carries a different payload.
-//  3. Load the key's open episodes with their events, and the settled
-//     episodes among and just after them.
-//  4. Rebuild the open episodes with the correlation rules, then write them:
-//     upsert each episode, move events whose episode changed, and delete the
-//     open episodes that no longer exist.
+//  3. Find the key's episodes just before and just after the event, and let
+//     the placement rule pick one. If it picks a settled episode, the event
+//     joins it as a correction: its aggregates are recomputed, its revision
+//     rises by one, and a corrected announcement goes into the outbox.
+//  4. Otherwise load the key's open episodes with their events, and the
+//     settled episodes among and just after them; rebuild the open episodes
+//     and write them: upsert each, move events whose episode changed, and
+//     delete the open episodes a merge removed.
 //  5. Commit.
 //
 // A kill before the commit rolls all of it back, and the redelivered message
@@ -82,6 +87,19 @@ func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
 		return Outcome{}, fmt.Errorf("insert event: %w", err)
 	}
 
+	added := correlation.Event{ID: ev.ID, OccurredAt: ev.OccurredAt, Severity: ev.Severity, ArrivedAt: arrivedAt}
+	before, after, err := neighbours(ctx, tx, ev.Key, ev.OccurredAt)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if target := correlation.Place(s.rules.Settings, ev.OccurredAt, before, after); target != nil && target.Settled {
+		out, err := correct(ctx, tx, ev.Key, target.ID, added)
+		if err != nil {
+			return Outcome{}, err
+		}
+		return out, tx.Commit(ctx)
+	}
+
 	open, err := openEvents(ctx, tx, ev.Key)
 	if err != nil {
 		return Outcome{}, err
@@ -95,7 +113,6 @@ func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
 		return Outcome{}, err
 	}
 
-	added := correlation.Event{ID: ev.ID, OccurredAt: ev.OccurredAt, Severity: ev.Severity, ArrivedAt: arrivedAt}
 	episodes, gone := correlation.Rebuild(s.rules.Settings, append(open, added), settled, uuid.NewV4)
 
 	var joined uuid.UUID
@@ -119,6 +136,88 @@ func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
 		return Outcome{}, fmt.Errorf("commit: %w", err)
 	}
 	return Outcome{EpisodeID: joined}, nil
+}
+
+// neighbours loads the key's episode with the greatest first seen at or
+// before the device time at, and the one with the smallest first seen after
+// it. Either is nil when there is none.
+func neighbours(ctx context.Context, tx pgx.Tx, key event.EpisodeKey, at time.Time) (before, after *correlation.Neighbour, err error) {
+	rows, err := tx.Query(ctx, `
+		(SELECT id, first_seen, last_seen, status = 'settled', true FROM episodes
+		 WHERE site_id = $1 AND camera_id = $2 AND kind = $3 AND first_seen <= $4
+		 ORDER BY first_seen DESC LIMIT 1)
+		UNION ALL
+		(SELECT id, first_seen, last_seen, status = 'settled', false FROM episodes
+		 WHERE site_id = $1 AND camera_id = $2 AND kind = $3 AND first_seen > $4
+		 ORDER BY first_seen LIMIT 1)`,
+		key.SiteID, key.CameraID, key.Kind, at)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load neighbours: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n correlation.Neighbour
+		var isBefore bool
+		if err := rows.Scan(&n.ID, &n.FirstSeen, &n.LastSeen, &n.Settled, &isBefore); err != nil {
+			return nil, nil, fmt.Errorf("load neighbours: %w", err)
+		}
+		if isBefore {
+			before = &n
+		} else {
+			after = &n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("load neighbours: %w", err)
+	}
+	return before, after, nil
+}
+
+// correct adds a late event to a settled episode: it assigns the event,
+// recomputes the episode's aggregates from all its events, raises its
+// revision and queues one corrected announcement with the new state.
+// settled_at and the close reason stay as they were.
+func correct(ctx context.Context, tx pgx.Tx, key event.EpisodeKey, id uuid.UUID, late correlation.Event) (Outcome, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT event_id, occurred_at, severity, arrived_at, episode_id FROM events WHERE episode_id = $1`, id)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("load episode %s: %w", id, err)
+	}
+	events, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (correlation.Event, error) {
+		var e correlation.Event
+		err := row.Scan(&e.ID, &e.OccurredAt, &e.Severity, &e.ArrivedAt, &e.EpisodeID)
+		return e, err
+	})
+	if err != nil {
+		return Outcome{}, fmt.Errorf("load episode %s: %w", id, err)
+	}
+	corrected := correlation.Correct(id, events, late)
+
+	if _, err := tx.Exec(ctx, "UPDATE events SET episode_id = $1 WHERE event_id = $2", id, late.ID); err != nil {
+		return Outcome{}, fmt.Errorf("assign late event: %w", err)
+	}
+	ep, err := scanEpisode(tx.QueryRow(ctx, `
+		UPDATE episodes SET
+			first_seen    = $2,
+			last_seen     = $3,
+			event_count   = $4,
+			peak_severity = $5,
+			last_arrival  = $6,
+			revision      = revision + 1
+		WHERE id = $1 AND status = 'settled'
+		RETURNING `+episodeColumns,
+		id, corrected.FirstSeen, corrected.LastSeen, len(corrected.Events), corrected.PeakSeverity, corrected.LastArrival))
+	if err != nil {
+		return Outcome{}, fmt.Errorf("correct episode %s: %w", id, err)
+	}
+
+	payload := contract.Marshal(contract.Announcement{EpisodeID: id.String(), Fields: ep.Fields(), Revision: &ep.Revision})
+	_, err = tx.Exec(ctx, `INSERT INTO outbox (episode_id, subject, msg_id, payload) VALUES ($1, $2, $3, $4)`,
+		id, "episode.corrected."+key.SiteID+"."+key.CameraID, fmt.Sprintf("corrected:%s:%d", id, ep.Revision), string(payload))
+	if err != nil {
+		return Outcome{}, fmt.Errorf("queue correction of %s: %w", id, err)
+	}
+	return Outcome{EpisodeID: id, Revision: ep.Revision}, nil
 }
 
 // openEvents loads the events of the key's open episodes, each with the

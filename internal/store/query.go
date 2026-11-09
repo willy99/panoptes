@@ -28,6 +28,7 @@ type Episode struct {
 	PeakSeverity event.Severity
 	CloseReason  *string    // nil while open
 	SettledAt    *time.Time // nil while open
+	Revision     int        // corrections since it settled; not part of the API's object
 }
 
 // Fields renders the episode in the brief's shape, without its id.
@@ -51,12 +52,12 @@ func (e Episode) Fields() contract.Fields {
 }
 
 const episodeColumns = `id, site_id, camera_id, kind, status, first_seen, last_seen,
-	event_count, peak_severity, close_reason, settled_at`
+	event_count, peak_severity, close_reason, settled_at, revision`
 
 func scanEpisode(row pgx.Row) (Episode, error) {
 	var e Episode
 	err := row.Scan(&e.ID, &e.Key.SiteID, &e.Key.CameraID, &e.Key.Kind, &e.Status, &e.FirstSeen, &e.LastSeen,
-		&e.EventCount, &e.PeakSeverity, &e.CloseReason, &e.SettledAt)
+		&e.EventCount, &e.PeakSeverity, &e.CloseReason, &e.SettledAt, &e.Revision)
 	return e, err
 }
 

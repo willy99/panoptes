@@ -1,6 +1,7 @@
 // Package correlation holds the rules that group one episode key's events
 // into episodes by device time. It does no IO: the store loads the key's
-// state, calls Rebuild inside the ingest transaction and writes the result.
+// state, calls Place and Rebuild inside the ingest transaction and writes the
+// result.
 package correlation
 
 import (
@@ -53,6 +54,44 @@ type Episode struct {
 	// has ended by device time and only waits to settle: MaxDuration when the
 	// next chapter started at its boundary, Quiet otherwise.
 	Pending CloseReason
+}
+
+// Neighbour is an episode of the key next to a new event in device time.
+type Neighbour struct {
+	ID        uuid.UUID
+	FirstSeen time.Time
+	LastSeen  time.Time
+	Settled   bool
+}
+
+// Place returns the episode a new event at device time at belongs to, by the
+// placement rule (ADR-0005). before is the key's episode with the greatest
+// first seen at or before the event, after the one with the smallest first
+// seen after it; either may be nil. The event goes to before when it is
+// within reach of it: no more than one quiet window after its last seen, and
+// before its chapter boundary. Otherwise it goes to after when it is within
+// reach of that one: no more than one quiet window before its first seen, and
+// keeping its span shorter than the max duration. Otherwise Place returns nil.
+//
+// Only a settled result matters to the caller: the event then joins that
+// episode as a correction. An open result, or nil, means the key's open
+// episodes are rebuilt, which puts the event where the walk says.
+func Place(s Settings, at time.Time, before, after *Neighbour) *Neighbour {
+	if before != nil && at.Sub(before.LastSeen) <= s.QuietWindow && at.Before(before.FirstSeen.Add(s.MaxDuration)) {
+		return before
+	}
+	if after != nil && after.FirstSeen.Sub(at) <= s.QuietWindow && after.LastSeen.Sub(at) < s.MaxDuration {
+		return after
+	}
+	return nil
+}
+
+// Correct adds a late event to a settled episode's events and recomputes its
+// aggregates. The episode keeps its id; its settled fields are the caller's.
+func Correct(id uuid.UUID, events []Event, late Event) Episode {
+	all := append(slices.Clone(events), late)
+	slices.SortFunc(all, byDeviceTime)
+	return aggregate(id, all)
 }
 
 // Rebuild groups the events of a key's open episodes, plus the event being

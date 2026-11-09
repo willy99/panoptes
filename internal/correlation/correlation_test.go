@@ -278,3 +278,99 @@ func TestRebuildIgnoresArrivalOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestPlace(t *testing.T) {
+	// neighbour parses "first-last" and marks the episode settled or open.
+	neighbour := func(span string, settled bool) *Neighbour {
+		first, last, _ := strings.Cut(span, "-")
+		return &Neighbour{ID: uuid.NewV4(), FirstSeen: clock(t, first), LastSeen: clock(t, last), Settled: settled}
+	}
+	tests := []struct {
+		name          string
+		before, after *Neighbour
+		at            string
+		want          string // before, after or none
+	}{
+		{
+			name:   "into the settled episode before, within one quiet window of its last seen",
+			before: neighbour("10:00:00-10:05:00", true),
+			after:  neighbour("10:20:00-10:21:00", true),
+			at:     "10:06:00",
+			want:   "before",
+		},
+		{
+			name:   "not into the episode before, one millisecond past its quiet window",
+			before: neighbour("10:00:00-10:05:00", true),
+			at:     "10:06:00.001",
+			want:   "none",
+		},
+		{
+			name:   "into the settled episode after, within one quiet window of its first seen",
+			before: neighbour("10:00:00-10:01:00", true),
+			after:  neighbour("10:10:00-10:12:00", true),
+			at:     "10:09:00",
+			want:   "after",
+		},
+		{
+			name:   "into neither, in the gap between two settled episodes",
+			before: neighbour("10:00:00-10:01:00", true),
+			after:  neighbour("10:10:00-10:11:00", true),
+			at:     "10:05:00",
+			want:   "none",
+		},
+		{
+			name:  "not into the episode after when joining it would reach the max duration",
+			after: neighbour("10:10:00-10:19:50", true),
+			at:    "10:09:50",
+			want:  "none",
+		},
+		{
+			name:  "into the episode after when joining it stays one millisecond short of the max duration",
+			after: neighbour("10:10:00-10:19:50", true),
+			at:    "10:09:50.001",
+			want:  "after",
+		},
+		{
+			// ADR-0005: a chapter cut at 10:10:00, then a late event at
+			// 10:09:45. It is within reach of both, and the earlier chapter
+			// takes it, so the next chapter's first seen does not move back
+			// across the boundary.
+			name:   "the 10:09:45 event joins the chapter that started at 10:00:00",
+			before: neighbour("10:00:00-10:09:30", true),
+			after:  neighbour("10:10:00-10:12:00", false),
+			at:     "10:09:45",
+			want:   "before",
+		},
+		{
+			name:   "not into the episode before at its chapter boundary",
+			before: neighbour("10:00:00-10:09:50", true),
+			at:     "10:10:00",
+			want:   "none",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := "none"
+			switch Place(settings, clock(t, tc.at), tc.before, tc.after) {
+			case nil:
+			case tc.before:
+				got = "before"
+			case tc.after:
+				got = "after"
+			}
+			if got != tc.want {
+				t.Errorf("Place = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCorrectRecomputesTheAggregates(t *testing.T) {
+	id := uuid.NewV4()
+	ep := Correct(id, timeline(t, "10:00:10/warning 10:00:20", id), timeline(t, "10:00:00/critical", uuid.UUID{})[0])
+	if ep.ID != id || ep.FirstSeen != clock(t, "10:00:00") || ep.LastSeen != clock(t, "10:00:20") ||
+		len(ep.Events) != 3 || ep.PeakSeverity != event.Critical {
+		t.Errorf("corrected episode: %s, first %v, last %v, %d events, peak %v; want the same id, 10:00:00, 10:00:20, 3, critical",
+			ep.ID, ep.FirstSeen, ep.LastSeen, len(ep.Events), ep.PeakSeverity)
+	}
+}

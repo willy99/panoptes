@@ -114,6 +114,11 @@ func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.L
 		log.Debug("duplicate event", "event_id", ev.ID)
 		return true
 	}
+	if out.Revision > 0 {
+		log.Info("episode corrected", "episode_id", out.EpisodeID.String(), "event_id", ev.ID,
+			"site_id", ev.Key.SiteID, "camera_id", ev.Key.CameraID, "kind", ev.Key.Kind, "revision", out.Revision)
+		return true
+	}
 	log.Debug("event ingested",
 		"site_id", ev.Key.SiteID, "camera_id", ev.Key.CameraID, "kind", ev.Key.Kind,
 		"event_id", ev.ID, "episode_id", out.EpisodeID.String())
