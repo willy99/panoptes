@@ -1,6 +1,6 @@
 # Spec: Panoptes correlation service
 
-Status: ready-for-agent
+Status: done
 
 Vocabulary follows `GLOSSARY.md`. The decisions behind this spec are ADR-0001 to ADR-0005 in `docs/adr/`; this spec does not repeat their reasoning.
 

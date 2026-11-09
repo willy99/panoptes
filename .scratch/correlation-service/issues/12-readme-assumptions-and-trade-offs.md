@@ -4,11 +4,21 @@
 
 **Blocked by:** 01 to 11 (all other tickets)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Every default from the questionnaire and every decision the spec's "Further Notes" assigns to the README is listed in "Assumptions and Trade-offs".
-- [ ] The section says that the service provisions the stream and the consumer itself because no skeleton was provided, and that AckWait and MaxDeliver are unchanged.
-- [ ] The section names every secondary item that was dropped, or says that none were.
-- [ ] "Assumptions and Trade-offs" fits on one printed page.
-- [ ] Every command in the README works on a clean clone.
-- [ ] The repository contains no credentials, secrets or chat transcripts.
+- [x] Every default from the questionnaire and every decision the spec's "Further Notes" assigns to the README is listed in "Assumptions and Trade-offs".
+- [x] The section says that the service provisions the stream and the consumer itself because no skeleton was provided, and that AckWait and MaxDeliver are unchanged.
+- [x] The section names every secondary item that was dropped, or says that none were.
+- [x] "Assumptions and Trade-offs" fits on one printed page.
+- [x] Every command in the README works on a clean clone.
+- [x] The repository contains no credentials, secrets or chat transcripts.
+
+## Comments
+
+Done in 0ebf8d6. Checked on a fresh clone:
+- `docker compose up` was ready in about 6s;
+- `make test` passed;
+- `docker compose --profile multi up` brought both instances to ready;
+- `make demo` against the two instances printed 5 settled announcements and 1 correction.
+
+The section is about 520 words. No credentials, secrets or chat transcripts are tracked: Postgres uses trust authentication locally, and `docs/tooling-mishaps.md`, the PDFs and the brief stay gitignored.
