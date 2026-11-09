@@ -47,3 +47,13 @@ services:
     ports:
       - "8081:8080"
     profiles: [multi]
+
+  # `make demo`: publishes a demo scenario to the running stack and prints
+  # the announcements as they arrive.
+  demo:
+    build: { context: ., target: demo }
+    environment:
+      NATS_URL: nats://nats:4222
+    depends_on:
+      nats: { condition: service_healthy }
+    profiles: [demo]
