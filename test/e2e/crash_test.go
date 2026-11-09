@@ -48,7 +48,7 @@ func TestEachCrashPointLosesNothingAndAnnouncesOnce(t *testing.T) {
 			doomed := start(t, "PANOPTES_CRASH_AT="+point)
 			doomed.waitReady()
 			s := newScenario(t)
-			s.redelivered = true
+			s.extraDeliveries = anyRedelivery
 
 			s.publish(s.event(1, "info", 0), s.event(2, "warning", 300*ms), s.event(3, "info", 600*ms))
 			if code := doomed.wait(10 * time.Second); code != 3 {

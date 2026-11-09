@@ -98,18 +98,29 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		runErr = fmt.Errorf("http server: %w", err)
 	}
 
-	// Shutdown: /readyz turns 503, the loops stop taking new work and finish
-	// what they hold, then the HTTP server stops. The deferred closes of NATS
-	// and the pool run last; closing NATS flushes the final acks.
+	// Shutdown, all within shutdownTimeout: /readyz turns 503, the loops stop
+	// taking new work and finish what they hold (an ingest transaction and its
+	// ack, a settle, a relay batch), then the HTTP server stops. The deferred
+	// closes of NATS and the pool run last; closing NATS flushes the final
+	// acks.
 	a.stopping.Store(true)
 	log.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
 	stopLoops()
-	loops.Wait()
+	finished := make(chan struct{})
+	go func() {
+		loops.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-shutdownCtx.Done():
+		return fmt.Errorf("work in flight did not finish within %v", shutdownTimeout)
+	}
 	if runErr != nil {
 		return runErr
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("http shutdown: %w", err)
 	}

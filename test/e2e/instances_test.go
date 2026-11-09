@@ -74,7 +74,7 @@ func TestSoakKillsInstancesAtRandom(t *testing.T) {
 	shortAckWait(t)
 	instances := []*proc{startReady(t), startReady(t)}
 	s := newScenario(t)
-	s.redelivered = true
+	s.extraDeliveries = anyRedelivery
 
 	// The load: events for three keys, round robin, with a duplicate now and
 	// then; enough of them to last through every round.

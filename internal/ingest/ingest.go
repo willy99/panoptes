@@ -43,21 +43,28 @@ func Run(ctx context.Context, consumer jetstream.Consumer, st *store.Store, log 
 	wg.Wait()
 }
 
+// pullWait is how long one pull request waits on the server for a message.
+const pullWait = time.Second
+
 // work pulls one message at a time, so a worker never holds messages it has
 // not started on: a message waiting in a local buffer would sit out its
 // AckWait if the process died.
+//
+// A pull is never cancelled midway. When shutdown begins, the worker lets its
+// open pull run out, at most pullWait, and handles a message that arrives
+// meanwhile. Cancelling the pull on the client would leave the request open
+// on the server, which could then hand it a message nobody reads; that
+// message would wait out AckWait before anyone else saw it.
 func work(ctx context.Context, consumer jetstream.Consumer, st *store.Store, log *slog.Logger) {
-	for {
-		msg, err := consumer.Next(jetstream.FetchContext(ctx))
+	for ctx.Err() == nil {
+		msg, err := consumer.Next(jetstream.FetchMaxWait(pullWait))
 		switch {
 		case err == nil:
 			// Handled even when shutdown has just begun: the message is in
 			// hand, and dropping it would cost it AckWait and a delivery.
-			if !handle(ctx, msg, st, log) && !sleep(ctx, backoff) {
+			if !handle(ctx, msg, st, log) && !pause(ctx, st, log) {
 				return
 			}
-		case ctx.Err() != nil:
-			return
 		case errors.Is(err, nats.ErrTimeout): // nothing arrived during the pull
 		default:
 			log.Warn("fetch failed", "error", err.Error())
@@ -65,6 +72,34 @@ func work(ctx context.Context, consumer jetstream.Consumer, st *store.Store, log
 				return
 			}
 		}
+	}
+}
+
+// pause stops the worker from fetching until Postgres answers again, so that
+// messages are not pulled only to fail: each delivery counts towards
+// MaxDeliver, and a worker that kept fetching through an outage would use
+// them all up. The message that failed comes back after AckWait. Meanwhile
+// /readyz reports 503, because it pings Postgres too. pause reports false
+// when ctx ended first.
+func pause(ctx context.Context, st *store.Store, log *slog.Logger) bool {
+	wait := backoff
+	for paused := false; ; paused = true {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := st.Ping(pingCtx)
+		cancel()
+		if err == nil {
+			if paused {
+				log.Info("postgres answers again; ingest resumed")
+			}
+			return true
+		}
+		if !paused {
+			log.Warn("ingest paused until postgres answers", "error", err.Error())
+		}
+		if !sleep(ctx, wait) {
+			return false
+		}
+		wait = min(wait*2, 5*time.Second)
 	}
 }
 
@@ -92,6 +127,7 @@ func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.L
 
 	txCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), txTimeout)
 	defer cancel()
+	started := time.Now()
 	out, err := st.Ingest(txCtx, ev)
 	if errors.Is(err, store.ErrRejected) {
 		skipInvalid(msg, err, log)
@@ -112,11 +148,15 @@ func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.L
 	// and changes nothing.
 	crash.Point(crash.IngestAfterCommit)
 	ack(msg, log)
+	metrics.IngestDuration.Observe(time.Since(started).Seconds())
 	if out.Duplicate {
+		metrics.IngestedEvents.WithLabelValues("duplicate").Inc()
 		log.Debug("duplicate event", "event_id", ev.ID)
 		return true
 	}
+	metrics.IngestedEvents.WithLabelValues("new").Inc()
 	if out.Revision > 0 {
+		metrics.EpisodeCorrections.Inc()
 		log.Info("episode corrected", "episode_id", out.EpisodeID.String(), "event_id", ev.ID,
 			"site_id", ev.Key.SiteID, "camera_id", ev.Key.CameraID, "kind", ev.Key.Kind, "revision", out.Revision)
 		return true

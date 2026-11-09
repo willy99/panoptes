@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"panoptes/internal/metrics"
 	"panoptes/internal/store"
 )
 
@@ -62,6 +63,7 @@ func Run(ctx context.Context, st *store.Store, guard time.Duration, log *slog.Lo
 			case err != nil:
 				log.Error("settle failed", "episode_id", id.String(), "error", err.Error())
 			case settled:
+				metrics.EpisodesSettled.WithLabelValues(*ep.CloseReason).Inc()
 				log.Info("episode settled", "episode_id", id.String(),
 					"site_id", ep.Key.SiteID, "camera_id", ep.Key.CameraID, "kind", ep.Key.Kind,
 					"close_reason", *ep.CloseReason, "event_count", ep.EventCount)

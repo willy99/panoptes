@@ -13,6 +13,9 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// anyRedelivery lets waitDrained accept any number of redeliveries.
+const anyRedelivery = 1 << 32
+
 // published counts the messages every scenario has published. Tests run one
 // at a time, so the deliveries the consumer makes during a test answer to it.
 var published uint64
@@ -24,9 +27,9 @@ type scenario struct {
 	js    jetstream.JetStream
 	site  string
 	valid map[string]bool // ids of the valid events published
-	// redelivered is set by tests that kill an instance: its unacknowledged
-	// messages are delivered again, so waitDrained does not count deliveries.
-	redelivered bool
+	// extraDeliveries is how many deliveries beyond one per message
+	// waitDrained accepts. Tests that kill an instance set it to anyRedelivery.
+	extraDeliveries uint64
 	// The consumer's delivery count and the published count when the
 	// scenario began, so that it can tell when Panoptes has handled every
 	// message published since.
@@ -122,7 +125,7 @@ func (s *scenario) waitDrained() {
 		info := consumerInfo(s.t, s.js)
 		if info.NumPending == 0 && info.NumAckPending == 0 {
 			deliveries, messages := info.Delivered.Consumer-s.delivered, published-s.published
-			if deliveries != messages && !s.redelivered {
+			if deliveries < messages || deliveries > messages+s.extraDeliveries {
 				s.t.Fatalf("episoder made %d deliveries for %d published messages", deliveries, messages)
 			}
 			return

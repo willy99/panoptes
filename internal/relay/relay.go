@@ -35,6 +35,7 @@ func Run(ctx context.Context, st *store.Store, js jetstream.JetStream, log *slog
 		// published only once the stream holds it.
 		_, err := js.Publish(ctx, a.Subject, a.Payload, jetstream.WithMsgID(a.MsgID))
 		if err != nil {
+			metrics.PublishFailures.Inc()
 			log.Warn("publish failed", "subject", a.Subject, "msg_id", a.MsgID, "error", err.Error())
 			return err
 		}
