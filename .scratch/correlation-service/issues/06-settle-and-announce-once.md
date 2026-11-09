@@ -4,11 +4,19 @@
 
 **Blocked by:** 03 (Correlation by device time)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] End-to-end: a camera that falls silent has its episode settled as `quiet` about one quiet window after its last event arrived, with `settled_at` set and status `settled`.
-- [ ] End-to-end: exactly one message arrives on `episode.settled.<site_id>.<camera_id>`. It is the episode object with `episode_id` in place of `id` and no other fields.
-- [ ] End-to-end: for a busy camera across a chapter boundary, the first chapter settles as `max_duration` within the settle grace while events keep arriving, and the second settles as `quiet` after the camera falls silent.
-- [ ] End-to-end: `GET /episodes?status=settled` and `?status=open` split the episodes correctly.
-- [ ] End-to-end: after a further wait, the `EPISODES` stream holds exactly one settled message per settled episode.
-- [ ] End-to-end: re-publishing an already stored event after its episode settled changes nothing and announces nothing.
+- [x] End-to-end: a camera that falls silent has its episode settled as `quiet` about one quiet window after its last event arrived, with `settled_at` set and status `settled`.
+- [x] End-to-end: exactly one message arrives on `episode.settled.<site_id>.<camera_id>`. It is the episode object with `episode_id` in place of `id` and no other fields.
+- [x] End-to-end: for a busy camera across a chapter boundary, the first chapter settles as `max_duration` within the settle grace while events keep arriving, and the second settles as `quiet` after the camera falls silent.
+- [x] End-to-end: `GET /episodes?status=settled` and `?status=open` split the episodes correctly.
+- [x] End-to-end: after a further wait, the `EPISODES` stream holds exactly one settled message per settled episode.
+- [x] End-to-end: re-publishing an already stored event after its episode settled changes nothing and announces nothing.
+
+## Comments
+
+Done in two commits after 30ab3fe: the contract package (the brief's shapes, shared by the API and the outbox), then the settle loop, the outbox and the relay with their tests. The end-to-end tests passed twice in a row.
+
+- `settled_at` is the settle transaction's `now()`, on the Postgres clock like the arrival times.
+- When a publish fails partway through a batch, the rows published before it are still marked, so fewer duplicates reach the stream's dedup window.
+- On shutdown the relay stops with the other loops, so an episode settled in the last moments is announced by the next instance to start. Ticket 10 can let the relay drain first.
