@@ -58,7 +58,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.HTTPAddr, err)
 	}
-	srv := &http.Server{Handler: api.NewHandler(a.ready), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: api.NewHandler(st, a.ready, log), ReadHeaderTimeout: 5 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 	log.Info("http server listening", "addr", ln.Addr().String())
