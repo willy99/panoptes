@@ -37,6 +37,15 @@ var testSettings = []string{
 	"EPISODE_SETTLE_GRACE=200ms",
 }
 
+// openSettings make the windows long enough that nothing settles while a test
+// reads open episodes: a quiet window of a minute, and a settle grace of an
+// hour for episodes that have ended by device time.
+var openSettings = []string{
+	"EPISODE_QUIET_WINDOW=1m",
+	"EPISODE_MAX_DURATION=5m",
+	"EPISODE_SETTLE_GRACE=1h",
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv("NATS_URL") == "" || os.Getenv("DATABASE_URL") == "" {
 		skipReason = "NATS_URL or DATABASE_URL is not set; make test sets both"

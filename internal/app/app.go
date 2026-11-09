@@ -18,6 +18,7 @@ import (
 	"panoptes/internal/api"
 	"panoptes/internal/broker"
 	"panoptes/internal/config"
+	"panoptes/internal/correlation"
 	"panoptes/internal/ingest"
 	"panoptes/internal/store"
 )
@@ -36,7 +37,7 @@ type app struct {
 // Run starts the service and blocks until ctx is cancelled, then shuts down
 // gracefully. It returns an error only when the service cannot run at all.
 func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
-	st, err := store.Open(cfg.DatabaseURL)
+	st, err := store.Open(cfg.DatabaseURL, correlation.Settings{QuietWindow: cfg.QuietWindow, MaxDuration: cfg.MaxDuration})
 	if err != nil {
 		return err
 	}

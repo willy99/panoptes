@@ -8,11 +8,14 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"panoptes/internal/correlation"
 )
 
 // Store is the service's handle on Postgres.
 type Store struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	rules correlation.Settings
 }
 
 // minPoolSize is the smallest pool the service runs with: one connection for
@@ -21,8 +24,9 @@ type Store struct {
 const minPoolSize = 8
 
 // Open creates the connection pool. It does not connect yet: the first query
-// does, so Open succeeds even while Postgres is still starting.
-func Open(databaseURL string) (*Store, error) {
+// does, so Open succeeds even while Postgres is still starting. The rules are
+// the windows the ingest transaction groups events by.
+func Open(databaseURL string, rules correlation.Settings) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
@@ -32,7 +36,7 @@ func Open(databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create connection pool: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, rules: rules}, nil
 }
 
 // Ping checks that Postgres answers.

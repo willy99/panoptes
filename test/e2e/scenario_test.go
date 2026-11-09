@@ -13,16 +13,20 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// published counts the messages every scenario has published. Tests run one
+// at a time, so the deliveries the consumer makes during a test answer to it.
+var published uint64
+
 // scenario is one test's own corner of the world: a site no other test uses,
 // so a test sees only its own episodes, and event ids that no other test uses.
-// It counts what it publishes, so that it can tell when Panoptes has handled
-// all of it.
 type scenario struct {
-	t         *testing.T
-	js        jetstream.JetStream
-	site      string
-	published int    // messages published so far
-	delivered uint64 // the episoder consumer's delivery count when the scenario began
+	t    *testing.T
+	js   jetstream.JetStream
+	site string
+	// The consumer's delivery count and the published count when the
+	// scenario began, so that it can tell when Panoptes has handled every
+	// message published since.
+	delivered, published uint64
 }
 
 // newScenario needs a running instance, which has created the consumer.
@@ -36,6 +40,7 @@ func newScenario(t *testing.T) *scenario {
 		js:        js,
 		site:      "site-" + hex.EncodeToString(b),
 		delivered: consumerInfo(t, js).Delivered.Consumer,
+		published: published,
 	}
 }
 
@@ -95,7 +100,7 @@ func (s *scenario) publishRaw(subject string, payload []byte) {
 	if _, err := s.js.Publish(ctx(s.t), subject, payload); err != nil {
 		s.t.Fatalf("publish on %s: %v", subject, err)
 	}
-	s.published++
+	published++
 }
 
 // waitDrained waits until the episoder consumer has nothing left to deliver
@@ -110,8 +115,9 @@ func (s *scenario) waitDrained() {
 	for {
 		info := consumerInfo(s.t, s.js)
 		if info.NumPending == 0 && info.NumAckPending == 0 {
-			if got := info.Delivered.Consumer - s.delivered; got != uint64(s.published) {
-				s.t.Fatalf("episoder made %d deliveries for %d published messages", got, s.published)
+			deliveries, messages := info.Delivered.Consumer-s.delivered, published-s.published
+			if deliveries != messages {
+				s.t.Fatalf("episoder made %d deliveries for %d published messages", deliveries, messages)
 			}
 			return
 		}
