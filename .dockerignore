@@ -1,0 +1,9 @@
+# Only the Go sources go into the image build.
+.git
+.claude
+.idea
+.scratch
+docs
+test
+*.md
+.DS_Store
