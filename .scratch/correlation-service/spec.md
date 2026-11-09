@@ -166,7 +166,7 @@ What a kill does at each step: a kill before the commit rolls everything back an
 ### Broker provisioning
 
 - At startup, create `ANALYTICS_EVENTS` (subjects `analytics.event.v1.>`, WorkQueue retention, file storage) if it is missing, and the durable pull consumer `episoder` (explicit ack, AckWait 30s, MaxDeliver 10) if it is missing. Existing ones are used as they are.
-- Create the stream `EPISODES` (subjects `episode.>`, limits retention, file storage, duplicate window 2 minutes) unless an existing stream already covers `episode.settled.*.*` and `episode.corrected.*.*`.
+- Create the stream `EPISODES` (limits retention, file storage, duplicate window 2 minutes) for whichever of `episode.settled.>` and `episode.corrected.>` no existing stream covers yet, and skip it when both are covered. JetStream rejects overlapping streams, so a stream on `episode.>` would fail next to a suite stream that covers only one of them.
 
 ### Configuration
 

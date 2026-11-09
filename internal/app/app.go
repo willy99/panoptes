@@ -11,7 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
 	"panoptes/internal/api"
+	"panoptes/internal/broker"
 	"panoptes/internal/config"
 	"panoptes/internal/store"
 )
@@ -24,6 +28,7 @@ type app struct {
 	cfg      config.Config
 	log      *slog.Logger
 	store    *store.Store
+	nc       *nats.Conn
 	started  atomic.Bool // startup work is done
 	stopping atomic.Bool // shutdown has begun
 }
@@ -36,7 +41,16 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 	defer st.Close()
-	a := &app{cfg: cfg, log: log, store: st}
+	nc, err := broker.Connect(cfg.NATSURL, log)
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return fmt.Errorf("jetstream: %w", err)
+	}
+	a := &app{cfg: cfg, log: log, store: st, nc: nc}
 
 	// The HTTP server starts first, so /healthz answers while the rest starts up
 	// and /readyz can say what the service is still waiting for.
@@ -49,9 +63,11 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	go func() { serveErr <- srv.Serve(ln) }()
 	log.Info("http server listening", "addr", ln.Addr().String())
 
-	// Startup work retries until it succeeds, because Postgres may still be
-	// starting. A SIGTERM during startup ends the retries and shuts down cleanly.
-	if err := retry(ctx, log, "migrate the database", st.Migrate); err == nil {
+	// Startup work retries until it succeeds, because Postgres or NATS may still
+	// be starting. A SIGTERM during startup ends the retries and shuts down cleanly.
+	provision := func(ctx context.Context) error { return broker.Provision(ctx, js) }
+	if retry(ctx, log, "migrate the database", st.Migrate) == nil &&
+		retry(ctx, log, "provision the streams", provision) == nil {
 		a.started.Store(true)
 		log.Info("ready")
 	}
@@ -82,6 +98,9 @@ func (a *app) ready(ctx context.Context) error {
 	}
 	if err := a.store.Ping(ctx); err != nil {
 		return fmt.Errorf("postgres: %w", err)
+	}
+	if status := a.nc.Status(); status != nats.CONNECTED {
+		return fmt.Errorf("nats: %s", status)
 	}
 	return nil
 }
