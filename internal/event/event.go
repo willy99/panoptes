@@ -4,15 +4,13 @@ package event
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
-// Key is the episode key: the site, camera and kind that events must share to
-// belong to the same episode.
-type Key struct {
+// EpisodeKey is the site, camera and kind that events must share to belong to
+// the same episode.
+type EpisodeKey struct {
 	SiteID   string
 	CameraID string
 	Kind     string
@@ -39,8 +37,7 @@ var severityNames = map[Severity]string{
 
 func (s Severity) String() string { return severityNames[s] }
 
-// ParseSeverity returns the severity with the given name.
-func ParseSeverity(name string) (Severity, bool) {
+func parseSeverity(name string) (Severity, bool) {
 	for s, n := range severityNames {
 		if n == name {
 			return s, true
@@ -60,11 +57,14 @@ var kinds = map[string]bool{
 // Event is one detection, decoded and validated.
 type Event struct {
 	ID         string
-	Key        Key
+	Key        EpisodeKey
 	Severity   Severity
 	OccurredAt time.Time       // device time, in UTC, cut to the microseconds Postgres keeps
 	Attributes json.RawMessage // exactly as the device sent it
 }
+
+// required are the payload fields that must be non-empty strings.
+var required = []string{"event_id", "site_id", "camera_id", "kind", "severity", "occurred_at"}
 
 // Decode turns a message payload into an event, or returns the reason it
 // cannot be one.
@@ -75,54 +75,43 @@ func Decode(payload []byte) (Event, error) {
 	if err := json.Unmarshal(payload, &fields); err != nil {
 		return Event{}, fmt.Errorf("not a JSON object: %w", err)
 	}
-
-	var problems []string
-	str := func(name string) string {
+	s := map[string]string{}
+	for _, name := range required {
 		raw, ok := fields[name]
-		if !ok {
-			problems = append(problems, fmt.Sprintf("%s is missing", name))
-			return ""
+		if !ok || string(raw) == "null" {
+			return Event{}, fmt.Errorf("%s is missing", name)
 		}
-		var s string
-		switch {
-		case string(raw) == "null":
-			problems = append(problems, fmt.Sprintf("%s is null", name))
-		case json.Unmarshal(raw, &s) != nil:
-			problems = append(problems, fmt.Sprintf("%s is not a string", name))
-		case s == "":
-			problems = append(problems, fmt.Sprintf("%s is empty", name))
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return Event{}, fmt.Errorf("%s is not a string", name)
 		}
-		return s
-	}
-	ev := Event{
-		ID:  str("event_id"),
-		Key: Key{SiteID: str("site_id"), CameraID: str("camera_id"), Kind: str("kind")},
-	}
-	severity := str("severity")
-	occurredAt := str("occurred_at")
-	if len(problems) > 0 {
-		return Event{}, errors.New(strings.Join(problems, "; "))
+		if v == "" {
+			return Event{}, fmt.Errorf("%s is empty", name)
+		}
+		s[name] = v
 	}
 
-	if !kinds[ev.Key.Kind] {
-		problems = append(problems, fmt.Sprintf("kind %q is not one of person_detected, loitering, line_crossed, tamper", ev.Key.Kind))
+	if !kinds[s["kind"]] {
+		return Event{}, fmt.Errorf("unknown kind %q", s["kind"])
 	}
-	var ok bool
-	if ev.Severity, ok = ParseSeverity(severity); !ok {
-		problems = append(problems, fmt.Sprintf("severity %q is not one of info, notice, warning, critical", severity))
+	severity, ok := parseSeverity(s["severity"])
+	if !ok {
+		return Event{}, fmt.Errorf("unknown severity %q", s["severity"])
 	}
-	t, err := time.Parse(time.RFC3339Nano, occurredAt)
+	occurredAt, err := time.Parse(time.RFC3339Nano, s["occurred_at"])
 	if err != nil {
-		problems = append(problems, fmt.Sprintf("occurred_at %q is not an RFC 3339 timestamp", occurredAt))
-	}
-	ev.OccurredAt = t.UTC().Truncate(time.Microsecond)
-	if len(problems) > 0 {
-		return Event{}, errors.New(strings.Join(problems, "; "))
+		return Event{}, fmt.Errorf("occurred_at %q is not an RFC 3339 timestamp", s["occurred_at"])
 	}
 
-	ev.Attributes = fields["attributes"]
-	if ev.Attributes == nil {
-		ev.Attributes = json.RawMessage(`{}`)
+	attributes := fields["attributes"]
+	if attributes == nil {
+		attributes = json.RawMessage(`{}`)
 	}
-	return ev, nil
+	return Event{
+		ID:         s["event_id"],
+		Key:        EpisodeKey{SiteID: s["site_id"], CameraID: s["camera_id"], Kind: s["kind"]},
+		Severity:   severity,
+		OccurredAt: occurredAt.UTC().Truncate(time.Microsecond),
+		Attributes: attributes,
+	}, nil
 }

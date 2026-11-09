@@ -15,15 +15,28 @@ import (
 
 // scenario is one test's own corner of the world: a site no other test uses,
 // so a test sees only its own episodes, and event ids that no other test uses.
+// It counts what it publishes, so that it can tell when Panoptes has handled
+// all of it.
 type scenario struct {
-	t    *testing.T
-	site string
+	t         *testing.T
+	js        jetstream.JetStream
+	site      string
+	published int    // messages published so far
+	delivered uint64 // the episoder consumer's delivery count when the scenario began
 }
 
-func newScenario(t *testing.T) scenario {
+// newScenario needs a running instance, which has created the consumer.
+func newScenario(t *testing.T) *scenario {
+	t.Helper()
+	js := jetStream(t)
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
-	return scenario{t: t, site: "site-" + hex.EncodeToString(b)}
+	return &scenario{
+		t:         t,
+		js:        js,
+		site:      "site-" + hex.EncodeToString(b),
+		delivered: consumerInfo(t, js).Delivered.Consumer,
+	}
 }
 
 // testEvent is an event as a device publishes it.
@@ -37,29 +50,31 @@ type testEvent struct {
 	Attributes json.RawMessage `json:"attributes,omitempty"`
 }
 
+// ms makes device-time offsets read as timelines: 300 * ms.
+const ms = time.Millisecond
+
 // event returns event number n of the scenario: a person_detected at cam-1,
-// at device time ms milliseconds after 10:00:00. Tests change the fields they
-// are about.
-func (s scenario) event(n int, severity string, ms int) testEvent {
+// at device time offset after 10:00:00. Tests change the fields they are about.
+func (s *scenario) event(n int, severity string, offset time.Duration) testEvent {
 	return testEvent{
 		ID:         fmt.Sprintf("%s-%03d", s.site, n),
 		Site:       s.site,
 		Camera:     "cam-1",
 		Kind:       "person_detected",
 		Severity:   severity,
-		OccurredAt: at(ms),
+		OccurredAt: at(offset),
 	}
 }
 
-// at renders the device time ms milliseconds after 2026-08-04T10:00:00Z, in
-// the format the API returns.
-func at(ms int) string {
+// at renders the device time offset after 2026-08-04T10:00:00Z, in the format
+// the API returns.
+func at(offset time.Duration) string {
 	base := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
-	return base.Add(time.Duration(ms) * time.Millisecond).Format("2006-01-02T15:04:05.000Z")
+	return base.Add(offset).Format("2006-01-02T15:04:05.000Z")
 }
 
 // publish sends the events in order, each on the subject its own fields name.
-func (s scenario) publish(js jetstream.JetStream, events ...testEvent) {
+func (s *scenario) publish(events ...testEvent) {
 	s.t.Helper()
 	for _, e := range events {
 		// Without HTML escaping, which would turn "<" in the attributes into
@@ -70,38 +85,55 @@ func (s scenario) publish(js jetstream.JetStream, events ...testEvent) {
 		if err := enc.Encode(e); err != nil {
 			s.t.Fatalf("encode event: %v", err)
 		}
-		subject := "analytics.event.v1." + e.Site + "." + e.Camera + "." + e.Kind
-		if _, err := js.Publish(ctx(s.t), subject, payload.Bytes()); err != nil {
-			s.t.Fatalf("publish %s: %v", e.ID, err)
-		}
+		s.publishRaw("analytics.event.v1."+e.Site+"."+e.Camera+"."+e.Kind, payload.Bytes())
 	}
+}
+
+// publishRaw sends one message exactly as given.
+func (s *scenario) publishRaw(subject string, payload []byte) {
+	s.t.Helper()
+	if _, err := s.js.Publish(ctx(s.t), subject, payload); err != nil {
+		s.t.Fatalf("publish on %s: %v", subject, err)
+	}
+	s.published++
 }
 
 // waitDrained waits until the episoder consumer has nothing left to deliver
 // and nothing delivered but unacknowledged. Panoptes acknowledges an event
 // only after its transaction commits, so by then every published event is
-// visible through the API.
-func waitDrained(t *testing.T, js jetstream.JetStream) {
-	t.Helper()
+// visible through the API. It then checks that every message was delivered
+// exactly once: a message whose transaction failed and came back would leave
+// the end state looking right.
+func (s *scenario) waitDrained() {
+	s.t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		consumer, err := js.Consumer(ctx(t), "ANALYTICS_EVENTS", "episoder")
-		if err != nil {
-			t.Fatalf("consumer episoder: %v", err)
-		}
-		info, err := consumer.Info(ctx(t))
-		if err != nil {
-			t.Fatalf("consumer info: %v", err)
-		}
+		info := consumerInfo(s.t, s.js)
 		if info.NumPending == 0 && info.NumAckPending == 0 {
+			if got := info.Delivered.Consumer - s.delivered; got != uint64(s.published) {
+				s.t.Fatalf("episoder made %d deliveries for %d published messages", got, s.published)
+			}
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("episoder still has %d pending and %d unacknowledged messages after 15s",
+			s.t.Fatalf("episoder still has %d pending and %d unacknowledged messages after 15s",
 				info.NumPending, info.NumAckPending)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func consumerInfo(t *testing.T, js jetstream.JetStream) *jetstream.ConsumerInfo {
+	t.Helper()
+	consumer, err := js.Consumer(ctx(t), "ANALYTICS_EVENTS", "episoder")
+	if err != nil {
+		t.Fatalf("consumer episoder: %v", err)
+	}
+	info, err := consumer.Info(ctx(t))
+	if err != nil {
+		t.Fatalf("consumer info: %v", err)
+	}
+	return info
 }
 
 // episodeJSON is the brief's episode object.
@@ -119,8 +151,8 @@ type episodeJSON struct {
 	SettledAt    *string `json:"settled_at"`
 }
 
-// memberJSON is one entry of the events list of GET /episodes/{id}.
-type memberJSON struct {
+// eventJSON is one entry of the events list of GET /episodes/{id}.
+type eventJSON struct {
 	EventID    string          `json:"event_id"`
 	Severity   string          `json:"severity"`
 	OccurredAt string          `json:"occurred_at"`
@@ -128,7 +160,7 @@ type memberJSON struct {
 }
 
 // episodes returns the scenario's episodes from GET /episodes.
-func (s scenario) episodes(p *proc) []episodeJSON {
+func (s *scenario) episodes(p *proc) []episodeJSON {
 	s.t.Helper()
 	var body struct {
 		Episodes []episodeJSON `json:"episodes"`
@@ -138,24 +170,12 @@ func (s scenario) episodes(p *proc) []episodeJSON {
 }
 
 // episode returns an episode and its events from GET /episodes/{id}.
-func (s scenario) episode(p *proc, id string) (episodeJSON, []memberJSON) {
+func (s *scenario) episode(p *proc, id string) (episodeJSON, []eventJSON) {
 	s.t.Helper()
 	var body struct {
-		Episode episodeJSON  `json:"episode"`
-		Events  []memberJSON `json:"events"`
+		Episode episodeJSON `json:"episode"`
+		Events  []eventJSON `json:"events"`
 	}
 	p.getJSON("/episodes/"+id, http.StatusOK, &body)
 	return body.Episode, body.Events
-}
-
-// getJSON performs a GET, checks the status and decodes the body into v.
-func (p *proc) getJSON(path string, wantStatus int, v any) {
-	p.t.Helper()
-	status, body := p.get(path)
-	if status != wantStatus {
-		p.t.Fatalf("GET %s: status %d, want %d; body %s", path, status, wantStatus, body)
-	}
-	if err := json.Unmarshal([]byte(body), v); err != nil {
-		p.t.Fatalf("GET %s: decode %s: %v", path, body, err)
-	}
 }

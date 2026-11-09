@@ -65,8 +65,8 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 
 	// The loops run on their own context, so that a failed HTTP server stops
 	// them the same way a SIGTERM does.
-	work, stopWork := context.WithCancel(ctx)
-	defer stopWork()
+	loopCtx, stopLoops := context.WithCancel(ctx)
+	defer stopLoops()
 	var loops sync.WaitGroup
 
 	// Startup work retries until it succeeds, because Postgres or NATS may still
@@ -76,9 +76,9 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		consumer, err = broker.Provision(ctx, js)
 		return err
 	}
-	if retry(work, log, "migrate the database", st.Migrate) == nil &&
-		retry(work, log, "provision the streams", provision) == nil {
-		loops.Go(func() { ingest.Run(work, consumer, st, log) })
+	if retry(loopCtx, log, "migrate the database", st.Migrate) == nil &&
+		retry(loopCtx, log, "provision the streams", provision) == nil {
+		loops.Go(func() { ingest.Run(loopCtx, consumer, st, log) })
 		a.started.Store(true)
 		log.Info("ready")
 	}
@@ -95,7 +95,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	// and the pool run last; closing NATS flushes the final acks.
 	a.stopping.Store(true)
 	log.Info("shutting down")
-	stopWork()
+	stopLoops()
 	loops.Wait()
 	if runErr != nil {
 		return runErr

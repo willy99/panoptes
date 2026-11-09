@@ -7,6 +7,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -150,6 +151,18 @@ func (p *proc) get(path string) (int, string) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
+}
+
+// getJSON performs a GET, checks the status and decodes the body into v.
+func (p *proc) getJSON(path string, wantStatus int, v any) {
+	p.t.Helper()
+	status, body := p.get(path)
+	if status != wantStatus {
+		p.t.Fatalf("GET %s: status %d, want %d; body %s", path, status, wantStatus, body)
+	}
+	if err := json.Unmarshal([]byte(body), v); err != nil {
+		p.t.Fatalf("GET %s: decode %s: %v", path, body, err)
+	}
 }
 
 // signal sends sig to the process.

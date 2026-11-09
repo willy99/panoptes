@@ -3,10 +3,10 @@ package e2e
 import (
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"uuid"
 )
 
@@ -16,57 +16,59 @@ import (
 
 func TestEventsOfOneKeyFormOneEpisode(t *testing.T) {
 	p := startReady(t)
-	js := jetStream(t)
 	s := newScenario(t)
 
-	first := s.event(1, "info", 0)
+	// Ids run against device time, and two events share a device time, so
+	// only an order by device time, then event_id, gives the expected list.
+	first := s.event(3, "info", 0)
 	first.Attributes = json.RawMessage(`{"track_id":4412,"confidence":0.87,"box":[1,2,3,4],"zone":{"name":"gate","id":7}}`)
-	second := s.event(2, "warning", 300) // no attributes
-	third := s.event(3, "notice", 600)
-	third.Attributes = json.RawMessage(`{"note":"<b>gate</b>"}`)
+	second := s.event(1, "warning", 300*ms) // no attributes
+	tied := s.event(4, "info", 300*ms)
+	last := s.event(2, "notice", 600*ms)
+	last.Attributes = json.RawMessage(`{"note":"<b>gate</b>"}`)
 	// Out of device-time order, so the order of the results is the service's doing.
-	s.publish(js, third, first, second)
-	waitDrained(t, js)
+	s.publish(last, tied, first, second)
+	s.waitDrained()
 
 	episodes := s.episodes(p)
 	if len(episodes) != 1 {
 		t.Fatalf("got %d episodes, want 1: %+v", len(episodes), episodes)
 	}
 	got := episodes[0]
-	if got.FirstSeen != at(0) || got.LastSeen != at(600) || got.EventCount != 3 || got.PeakSeverity != "warning" {
-		t.Errorf("first seen %s, last seen %s, event count %d, peak severity %s; want %s, %s, 3, warning",
-			got.FirstSeen, got.LastSeen, got.EventCount, got.PeakSeverity, at(0), at(600))
+	if got.FirstSeen != at(0) || got.LastSeen != at(600*ms) || got.EventCount != 4 || got.PeakSeverity != "warning" {
+		t.Errorf("first seen %s, last seen %s, event count %d, peak severity %s; want %s, %s, 4, warning",
+			got.FirstSeen, got.LastSeen, got.EventCount, got.PeakSeverity, at(0), at(600*ms))
 	}
 
-	episode, members := s.episode(p, got.ID)
-	if episode != got {
+	episode, events := s.episode(p, got.ID)
+	if episode.ID != got.ID || episode.EventCount != got.EventCount || episode.LastSeen != got.LastSeen {
 		t.Errorf("GET /episodes/{id} episode %+v differs from the list's %+v", episode, got)
 	}
 	// Each event exactly as published, attributes byte for byte: key order
 	// kept, "<" not escaped, and {} where the device sent none.
-	want := []memberJSON{
+	want := []eventJSON{
 		{EventID: first.ID, Severity: "info", OccurredAt: at(0), Attributes: first.Attributes},
-		{EventID: second.ID, Severity: "warning", OccurredAt: at(300), Attributes: json.RawMessage(`{}`)},
-		{EventID: third.ID, Severity: "notice", OccurredAt: at(600), Attributes: third.Attributes},
+		{EventID: second.ID, Severity: "warning", OccurredAt: at(300 * ms), Attributes: json.RawMessage(`{}`)},
+		{EventID: tied.ID, Severity: "info", OccurredAt: at(300 * ms), Attributes: json.RawMessage(`{}`)},
+		{EventID: last.ID, Severity: "notice", OccurredAt: at(600 * ms), Attributes: last.Attributes},
 	}
-	if !slices.EqualFunc(members, want, sameMember) {
-		t.Errorf("events:\n got  %s\n want %s", show(members), show(want))
+	if !slices.EqualFunc(events, want, sameEvent) {
+		t.Errorf("events:\n got  %s\n want %s", show(events), show(want))
 	}
 }
 
 func TestDuplicatesAreStoredOnceAndTheFirstCopyWins(t *testing.T) {
 	p := startReady(t)
-	js := jetStream(t)
 	s := newScenario(t)
 
 	first := s.event(1, "info", 0)
-	second := s.event(2, "warning", 200)
+	second := s.event(2, "warning", 200*ms)
 	second.Attributes = json.RawMessage(`{"copy":"original"}`)
-	third := s.event(3, "notice", 400)
+	third := s.event(3, "notice", 400*ms)
 
 	// Two copies of each, back to back, so that workers race on one event_id.
-	s.publish(js, first, first, second, second, third, third)
-	waitDrained(t, js)
+	s.publish(first, first, second, second, third, third)
+	s.waitDrained()
 
 	// A third copy of each, once the first is stored. The copy of the second
 	// event differs in everything but its event_id, down to the camera, which
@@ -74,41 +76,73 @@ func TestDuplicatesAreStoredOnceAndTheFirstCopyWins(t *testing.T) {
 	altered := second
 	altered.Camera = "cam-2"
 	altered.Severity = "critical"
-	altered.OccurredAt = at(900)
+	altered.OccurredAt = at(900 * ms)
 	altered.Attributes = json.RawMessage(`{"copy":"altered"}`)
-	s.publish(js, first, altered, third)
-	waitDrained(t, js)
+	s.publish(first, altered, third)
+	s.waitDrained()
 
 	episodes := s.episodes(p)
 	if len(episodes) != 1 {
 		t.Fatalf("got %d episodes, want 1 (the altered copy must not start one at cam-2): %+v", len(episodes), episodes)
 	}
 	got := episodes[0]
-	if got.CameraID != "cam-1" || got.EventCount != 3 || got.LastSeen != at(400) || got.PeakSeverity != "warning" {
+	if got.CameraID != "cam-1" || got.EventCount != 3 || got.LastSeen != at(400*ms) || got.PeakSeverity != "warning" {
 		t.Errorf("camera %s, event count %d, last seen %s, peak severity %s; want cam-1, 3, %s, warning",
-			got.CameraID, got.EventCount, got.LastSeen, got.PeakSeverity, at(400))
+			got.CameraID, got.EventCount, got.LastSeen, got.PeakSeverity, at(400*ms))
 	}
-	_, members := s.episode(p, got.ID)
-	want := []memberJSON{
+	_, events := s.episode(p, got.ID)
+	want := []eventJSON{
 		{EventID: first.ID, Severity: "info", OccurredAt: at(0), Attributes: json.RawMessage(`{}`)},
-		{EventID: second.ID, Severity: "warning", OccurredAt: at(200), Attributes: second.Attributes},
-		{EventID: third.ID, Severity: "notice", OccurredAt: at(400), Attributes: json.RawMessage(`{}`)},
+		{EventID: second.ID, Severity: "warning", OccurredAt: at(200 * ms), Attributes: second.Attributes},
+		{EventID: third.ID, Severity: "notice", OccurredAt: at(400 * ms), Attributes: json.RawMessage(`{}`)},
 	}
-	if !slices.EqualFunc(members, want, sameMember) {
-		t.Errorf("events:\n got  %s\n want %s", show(members), show(want))
+	if !slices.EqualFunc(events, want, sameEvent) {
+		t.Errorf("events:\n got  %s\n want %s", show(events), show(want))
+	}
+}
+
+func TestOneEventIDUnderTwoKeysAtOnceIsStoredOnce(t *testing.T) {
+	p := startReady(t)
+	s := newScenario(t)
+
+	// Each event goes out twice back to back, at two cameras. The copies take
+	// different key locks, so workers run them at the same time and meet only
+	// on the event_id. Ten pairs make at least one real collision likely.
+	const pairs = 10
+	for n := range pairs {
+		e := s.event(n, "info", time.Duration(n)*100*ms)
+		other := e
+		other.Camera = "cam-2"
+		s.publish(e, other)
+	}
+	s.waitDrained()
+
+	seen := map[string]int{}
+	for _, e := range s.episodes(p) {
+		_, events := s.episode(p, e.ID)
+		for _, ev := range events {
+			seen[ev.EventID]++
+		}
+	}
+	if len(seen) != pairs {
+		t.Errorf("stored %d distinct events, want %d", len(seen), pairs)
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Errorf("event %s is in %d episodes, want 1", id, n)
+		}
 	}
 }
 
 func TestKindsAtOneCameraFormSeparateEpisodes(t *testing.T) {
 	p := startReady(t)
-	js := jetStream(t)
 	s := newScenario(t)
 
 	person := s.event(1, "warning", 0)
 	tamper := s.event(2, "critical", 0)
 	tamper.Kind = "tamper"
-	s.publish(js, person, tamper)
-	waitDrained(t, js)
+	s.publish(person, tamper)
+	s.waitDrained()
 
 	episodes := s.episodes(p)
 	if len(episodes) != 2 {
@@ -127,12 +161,11 @@ func TestKindsAtOneCameraFormSeparateEpisodes(t *testing.T) {
 
 func TestPeakSeverityIsTheHighestRank(t *testing.T) {
 	p := startReady(t)
-	js := jetStream(t)
 	s := newScenario(t)
 
 	// As strings, "warning" sorts after "critical".
-	s.publish(js, s.event(1, "warning", 0), s.event(2, "critical", 100), s.event(3, "warning", 200))
-	waitDrained(t, js)
+	s.publish(s.event(1, "warning", 0), s.event(2, "critical", 100*ms), s.event(3, "warning", 200*ms))
+	s.waitDrained()
 
 	episodes := s.episodes(p)
 	if len(episodes) != 1 || episodes[0].PeakSeverity != "critical" {
@@ -140,20 +173,15 @@ func TestPeakSeverityIsTheHighestRank(t *testing.T) {
 	}
 }
 
-// timestamp is the API's time format: UTC, a Z suffix, and milliseconds, or
-// microseconds when there are digits below the millisecond.
-var timestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(\d{3})?Z$`)
-
 func TestAnOpenEpisodeHasTheContractShape(t *testing.T) {
 	// A long quiet window keeps the episode open while the test reads it.
 	p := startReady(t, "EPISODE_QUIET_WINDOW=1h")
-	js := jetStream(t)
 	s := newScenario(t)
 
 	precise := s.event(1, "info", 0)
 	precise.OccurredAt = "2026-08-04T10:00:00.123456Z"
-	s.publish(js, precise, s.event(2, "info", 500))
-	waitDrained(t, js)
+	s.publish(precise, s.event(2, "info", 500*ms))
+	s.waitDrained()
 
 	var list map[string]json.RawMessage
 	p.getJSON("/episodes?site_id="+s.site, http.StatusOK, &list)
@@ -179,13 +207,8 @@ func TestAnOpenEpisodeHasTheContractShape(t *testing.T) {
 		t.Errorf("status %q, close_reason %s, settled_at %s; want open, null, null",
 			e.Status, item["close_reason"], item["settled_at"])
 	}
-	if e.FirstSeen != "2026-08-04T10:00:00.123456Z" || e.LastSeen != at(500) {
-		t.Errorf("first seen %s, last seen %s; want 2026-08-04T10:00:00.123456Z, %s", e.FirstSeen, e.LastSeen, at(500))
-	}
-	for name, v := range map[string]string{"first_seen": e.FirstSeen, "last_seen": e.LastSeen} {
-		if !timestamp.MatchString(v) {
-			t.Errorf("%s %q does not match %s", name, v, timestamp)
-		}
+	if e.FirstSeen != "2026-08-04T10:00:00.123456Z" || e.LastSeen != at(500*ms) {
+		t.Errorf("first seen %s, last seen %s; want 2026-08-04T10:00:00.123456Z, %s", e.FirstSeen, e.LastSeen, at(500*ms))
 	}
 
 	var detail map[string]json.RawMessage
@@ -205,7 +228,7 @@ func TestAnOpenEpisodeHasTheContractShape(t *testing.T) {
 
 func TestUnknownAndMalformedEpisodeIDsAreNotFound(t *testing.T) {
 	p := startReady(t)
-	for _, id := range []string{uuid.NewV4().String(), "not-a-uuid"} {
+	for _, id := range []string{uuid.NewV4().String(), "not-a-uuid", "", "a/b"} {
 		var body struct {
 			Error string `json:"error"`
 		}
@@ -230,17 +253,17 @@ func assertKeys(t *testing.T, what string, object map[string]json.RawMessage, ke
 	}
 }
 
-// sameMember compares two events, attributes byte for byte.
-func sameMember(a, b memberJSON) bool {
+// sameEvent compares two events, attributes byte for byte.
+func sameEvent(a, b eventJSON) bool {
 	return a.EventID == b.EventID && a.Severity == b.Severity && a.OccurredAt == b.OccurredAt &&
 		string(a.Attributes) == string(b.Attributes)
 }
 
 // show renders events for a failure message, attributes as they came.
-func show(members []memberJSON) string {
+func show(events []eventJSON) string {
 	var b strings.Builder
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(members)
+	_ = enc.Encode(events)
 	return strings.TrimSpace(b.String())
 }

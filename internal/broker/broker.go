@@ -182,7 +182,9 @@ func ensureConsumer(ctx context.Context, js jetstream.JetStream, stream string, 
 		return nil, fmt.Errorf("look up consumer %s: %w", cfg.Durable, err)
 	}
 	consumer, err = js.CreateConsumer(ctx, stream, cfg)
-	if errors.Is(err, jetstream.ErrConsumerExists) { // another instance won the race
+	// A consumer created meanwhile with the same settings comes back without
+	// an error; one with other settings is used as it is, like any existing one.
+	if errors.Is(err, jetstream.ErrConsumerExists) {
 		consumer, err = js.Consumer(ctx, stream, cfg.Durable)
 	}
 	if err != nil {

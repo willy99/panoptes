@@ -27,11 +27,24 @@ type episodeJSON struct {
 	SettledAt    *string `json:"settled_at"`   // null while open
 }
 
-type memberJSON struct {
+// eventJSON is one of an episode's events in GET /episodes/{id}.
+type eventJSON struct {
 	EventID    string          `json:"event_id"`
 	Severity   string          `json:"severity"`
 	OccurredAt string          `json:"occurred_at"`
 	Attributes json.RawMessage `json:"attributes"`
+}
+
+// listResponse is the body of GET /episodes.
+type listResponse struct {
+	Episodes   []episodeJSON `json:"episodes"`
+	NextCursor string        `json:"next_cursor"` // empty on the last page
+}
+
+// detailResponse is the body of GET /episodes/{id}.
+type detailResponse struct {
+	Episode episodeJSON `json:"episode"`
+	Events  []eventJSON `json:"events"`
 }
 
 func toEpisodeJSON(e store.Episode) episodeJSON {
@@ -78,7 +91,7 @@ func listEpisodes(st *store.Store, log *slog.Logger) http.HandlerFunc {
 		for _, e := range episodes {
 			out = append(out, toEpisodeJSON(e))
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"episodes": out, "next_cursor": ""})
+		writeJSON(w, http.StatusOK, listResponse{Episodes: out})
 	}
 }
 
@@ -91,7 +104,7 @@ func getEpisode(st *store.Store, log *slog.Logger) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, store.ErrNotFound.Error())
 			return
 		}
-		episode, members, err := st.Episode(r.Context(), id)
+		episode, events, err := st.Episode(r.Context(), id)
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
@@ -100,15 +113,15 @@ func getEpisode(st *store.Store, log *slog.Logger) http.HandlerFunc {
 			internalError(w, log, err)
 			return
 		}
-		events := make([]memberJSON, 0, len(members))
-		for _, m := range members {
-			events = append(events, memberJSON{
-				EventID:    m.EventID,
-				Severity:   m.Severity.String(),
-				OccurredAt: formatTime(m.OccurredAt),
-				Attributes: m.Attributes,
+		out := detailResponse{Episode: toEpisodeJSON(episode), Events: make([]eventJSON, 0, len(events))}
+		for _, e := range events {
+			out.Events = append(out.Events, eventJSON{
+				EventID:    e.ID,
+				Severity:   e.Severity.String(),
+				OccurredAt: formatTime(e.OccurredAt),
+				Attributes: e.Attributes,
 			})
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"episode": toEpisodeJSON(episode), "events": events})
+		writeJSON(w, http.StatusOK, out)
 	}
 }

@@ -27,9 +27,9 @@ const workers = 4
 // from holding shutdown forever.
 const txTimeout = 10 * time.Second
 
-// retryDelay is how long a message whose transaction failed waits before it
-// is delivered again.
-const retryDelay = time.Second
+// backoff is how long a worker waits after a failed fetch or a failed
+// transaction before it pulls again.
+const backoff = time.Second
 
 // Run processes messages until ctx ends, then waits for the messages already
 // in hand to finish.
@@ -48,53 +48,70 @@ func work(ctx context.Context, consumer jetstream.Consumer, st *store.Store, log
 	for {
 		msg, err := consumer.Next(jetstream.FetchContext(ctx))
 		switch {
+		case err == nil:
+			// Handled even when shutdown has just begun: the message is in
+			// hand, and dropping it would cost it AckWait and a delivery.
+			if !handle(ctx, msg, st, log) && !sleep(ctx, backoff) {
+				return
+			}
 		case ctx.Err() != nil:
 			return
 		case errors.Is(err, nats.ErrTimeout): // nothing arrived during the pull
-			continue
-		case err != nil:
+		default:
 			log.Warn("fetch failed", "error", err.Error())
-			select {
-			case <-ctx.Done():
+			if !sleep(ctx, backoff) {
 				return
-			case <-time.After(retryDelay):
 			}
-			continue
 		}
-		handle(ctx, msg, st, log)
 	}
 }
 
-func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.Logger) {
+// sleep waits for d and reports false when ctx ended first.
+func sleep(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+// handle processes one message and reports whether it is done with it.
+func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.Logger) bool {
 	ev, err := event.Decode(msg.Data())
 	if err != nil {
 		// It can never become an event, so redelivering it would change
 		// nothing: acknowledge it and move on.
 		log.Warn("invalid event", "reason", err.Error(), "subject", msg.Subject())
 		ack(msg, log)
-		return
+		return true
 	}
 
 	txCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), txTimeout)
 	defer cancel()
 	out, err := st.Ingest(txCtx, ev)
 	if err != nil {
-		// The transaction rolled back, so nothing was stored. Ask for the
-		// message again; if even the nak is lost, AckWait brings it back.
+		// The transaction rolled back, so nothing was stored. The message is
+		// left unacknowledged and comes back after AckWait. A nak would bring
+		// it back sooner, but each delivery counts towards MaxDeliver, so a
+		// short nak delay would use up all ten within seconds of a database
+		// outage and lose the event.
 		log.Error("ingest failed", "event_id", ev.ID, "error", err.Error())
-		if err := msg.NakWithDelay(retryDelay); err != nil {
-			log.Warn("nak failed", "event_id", ev.ID, "error", err.Error())
-		}
-		return
+		return false
 	}
 
 	// The transaction has committed; only now is the message acknowledged. If
 	// the process dies here or the ack is lost, the redelivery is a duplicate
 	// and changes nothing.
 	ack(msg, log)
+	if out.Duplicate {
+		log.Debug("duplicate event", "event_id", ev.ID)
+		return true
+	}
 	log.Debug("event ingested",
 		"site_id", ev.Key.SiteID, "camera_id", ev.Key.CameraID, "kind", ev.Key.Kind,
-		"event_id", ev.ID, "duplicate", out.Duplicate, "episode_id", out.EpisodeID.String())
+		"event_id", ev.ID, "episode_id", out.EpisodeID.String())
+	return true
 }
 
 func ack(msg jetstream.Msg, log *slog.Logger) {

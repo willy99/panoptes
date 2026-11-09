@@ -36,11 +36,14 @@ type Outcome struct {
 // returns, so a kill between the commit and the ack, or a lost ack, makes the
 // redelivery a duplicate that stops at step 2.
 func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
-	tx, err := s.pool.Begin(ctx)
+	// Read committed, whatever DATABASE_URL sets as the default: each statement
+	// must see what the previous holder of the key's lock committed while this
+	// transaction waited for the lock.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Outcome{}, fmt.Errorf("begin: %w", err)
 	}
-	defer tx.Rollback(context.WithoutCancel(ctx)) // does nothing after a commit
+	defer tx.Rollback(ctx) // does nothing after a commit
 
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", keyLock(ev.Key)); err != nil {
 		return Outcome{}, fmt.Errorf("lock episode key: %w", err)
@@ -58,8 +61,9 @@ func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
 		return Outcome{Duplicate: true}, tx.Commit(ctx)
 	}
 
-	// A stand-in until correlation by device time: each key has at most one
-	// open episode, and it takes every event of the key.
+	// A stand-in until correlation by device time, together with recompute
+	// below: each key has at most one open episode, and it takes every event
+	// of the key.
 	var id uuid.UUID
 	err = tx.QueryRow(ctx, `
 		SELECT id FROM episodes
@@ -118,7 +122,7 @@ func recompute(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
 
 // keyLock maps an episode key to the number of its transaction lock. Two keys
 // whose numbers collide only wait for each other.
-func keyLock(k event.Key) int64 {
+func keyLock(k event.EpisodeKey) int64 {
 	h := fnv.New64a()
 	for _, part := range []string{k.SiteID, k.CameraID, k.Kind} {
 		h.Write([]byte(part))

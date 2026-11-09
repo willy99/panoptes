@@ -25,6 +25,11 @@ func NewHandler(st *store.Store, ready ReadinessCheck, log *slog.Logger) http.Ha
 
 	mux.HandleFunc("GET /episodes", listEpisodes(st, log))
 	mux.HandleFunc("GET /episodes/{id}", getEpisode(st, log))
+	// Any other path under /episodes/, such as /episodes/ or /episodes/a/b,
+	// cannot name an episode either, and gets the same JSON 404.
+	mux.HandleFunc("GET /episodes/{rest...}", func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, store.ErrNotFound.Error())
+	})
 
 	// Liveness: the process is running and serving HTTP. It never checks
 	// dependencies, so a database outage does not get the process restarted.
