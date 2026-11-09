@@ -4,13 +4,23 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] On a clean clone, `docker compose up` brings all three services up and `/readyz` returns 200.
-- [ ] `make up && make test` passes, and `make test` leaves the stack started by `make up` untouched.
-- [ ] `go test ./...` on a host without the addresses set passes and skips the end-to-end package.
-- [ ] End-to-end: after start, `/healthz` and `/readyz` return 200, and the two streams and the consumer exist with the spec's settings.
-- [ ] End-to-end: an `ANALYTICS_EVENTS` stream created beforehand with different settings is left unchanged.
-- [ ] End-to-end: an invalid duration in `EPISODE_QUIET_WINDOW` makes the process exit non-zero with a message that names the variable.
-- [ ] End-to-end: SIGTERM makes the process exit with code 0.
-- [ ] Two instances started at the same moment both apply migrations without error.
+- [x] On a clean clone, `docker compose up` brings all three services up and `/readyz` returns 200.
+- [x] `make up && make test` passes, and `make test` leaves the stack started by `make up` untouched.
+- [x] `go test ./...` on a host without the addresses set passes and skips the end-to-end package.
+- [x] End-to-end: after start, `/healthz` and `/readyz` return 200, and the two streams and the consumer exist with the spec's settings.
+- [x] End-to-end: an `ANALYTICS_EVENTS` stream created beforehand with different settings is left unchanged.
+- [x] End-to-end: an invalid duration in `EPISODE_QUIET_WINDOW` makes the process exit non-zero with a message that names the variable.
+- [x] End-to-end: SIGTERM makes the process exit with code 0.
+- [x] Two instances started at the same moment both apply migrations without error.
+
+## Comments
+
+Done in 9954c62 (config, health, e2e harness), 61be893 (Postgres and migrations), 5404f8a (provisioning), baa4245 (Dockerfile and compose) and 74dd189 (fixes from the two-axis review). Checked on a fresh clone: `docker compose up` gives `/readyz` 200, and `make test` passes next to the running stack.
+
+What these tests do not prove:
+- The two-instance migration test is a smoke test. With the advisory lock removed, it still passed 30 runs out of 30: the collision is rare, and when it happens the loser's transaction rolls back and startup retries.
+- The harness picks a free port and closes it before the child binds it, so another process could take it in between. This is acceptable while tests run one at a time.
+
+Beyond the ticket: the `EPISODES` stream takes only the announcement patterns no other stream covers, and it is extended when a pattern loses its stream. The spec and ADR-0004 were updated to match.
