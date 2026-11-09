@@ -4,9 +4,15 @@
 
 **Blocked by:** 02 (Events in, episodes out)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `make up && make demo` on a clean clone publishes the scenario and prints what to look at.
-- [ ] The scenario is reproducible from a seed, and its device times are relative to the moment it runs.
-- [ ] After the run and one quiet window, the API shows the expected episodes and close reasons, `/metrics` shows the expected invalid count, and the episode stream holds the settled and corrected messages.
-- [ ] The command uses only the public contract: NATS subjects and payloads.
+- [x] `make up && make demo` on a clean clone publishes the scenario and prints what to look at.
+- [x] The scenario is reproducible from a seed, and its device times are relative to the moment it runs.
+- [x] After the run and one quiet window, the API shows the expected episodes and close reasons, `/metrics` shows the expected invalid count, and the episode stream holds the settled and corrected messages.
+- [x] The command uses only the public contract: NATS subjects and payloads.
+
+## Comments
+
+Done in the commit after ef52915. Run right after `make up`, the demo spends most of its 75 seconds in the restart guard and the quiet window, both 60s by default. The narration shows the first chapter settling as max_duration, the late event's correction, then the quiet settles.
+
+The demo picks a new site for each run, named after the time it starts, so runs never collide. The seed fixes the scenario's random choices (shuffles, duplicates, attributes), not the ids.
