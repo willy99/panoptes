@@ -12,25 +12,10 @@ import (
 	"time"
 	"uuid"
 
+	"panoptes/internal/contract"
 	"panoptes/internal/event"
 	"panoptes/internal/store"
 )
-
-// episodeJSON is the brief's episode object. Its field names and formats are
-// a contract the grading suite reads.
-type episodeJSON struct {
-	ID           string  `json:"id"`
-	SiteID       string  `json:"site_id"`
-	CameraID     string  `json:"camera_id"`
-	Kind         string  `json:"kind"`
-	Status       string  `json:"status"`
-	FirstSeen    string  `json:"first_seen"`
-	LastSeen     string  `json:"last_seen"`
-	EventCount   int     `json:"event_count"`
-	PeakSeverity string  `json:"peak_severity"`
-	CloseReason  *string `json:"close_reason"` // null while open
-	SettledAt    *string `json:"settled_at"`   // null while open
-}
 
 // eventJSON is one of an episode's events in GET /episodes/{id}.
 type eventJSON struct {
@@ -42,45 +27,14 @@ type eventJSON struct {
 
 // listResponse is the body of GET /episodes.
 type listResponse struct {
-	Episodes   []episodeJSON `json:"episodes"`
-	NextCursor string        `json:"next_cursor"` // empty on the last page
+	Episodes   []contract.Episode `json:"episodes"`
+	NextCursor string             `json:"next_cursor"` // empty on the last page
 }
 
 // detailResponse is the body of GET /episodes/{id}.
 type detailResponse struct {
-	Episode episodeJSON `json:"episode"`
-	Events  []eventJSON `json:"events"`
-}
-
-func toEpisodeJSON(e store.Episode) episodeJSON {
-	out := episodeJSON{
-		ID:           e.ID.String(),
-		SiteID:       e.Key.SiteID,
-		CameraID:     e.Key.CameraID,
-		Kind:         e.Key.Kind,
-		Status:       e.Status,
-		FirstSeen:    formatTime(e.FirstSeen),
-		LastSeen:     formatTime(e.LastSeen),
-		EventCount:   e.EventCount,
-		PeakSeverity: e.PeakSeverity.String(),
-		CloseReason:  e.CloseReason,
-	}
-	if e.SettledAt != nil {
-		settledAt := formatTime(*e.SettledAt)
-		out.SettledAt = &settledAt
-	}
-	return out
-}
-
-// formatTime renders a time in UTC with a Z suffix and milliseconds, as the
-// brief's examples do, or with microseconds when it has digits below the
-// millisecond, so that nothing Postgres stores is lost.
-func formatTime(t time.Time) string {
-	t = t.UTC()
-	if t.Nanosecond()%int(time.Millisecond) == 0 {
-		return t.Format("2006-01-02T15:04:05.000Z")
-	}
-	return t.Format("2006-01-02T15:04:05.000000Z")
+	Episode contract.Episode `json:"episode"`
+	Events  []eventJSON      `json:"events"`
 }
 
 // Page sizes from the brief: a limit above the maximum is clamped, not refused.
@@ -105,14 +59,14 @@ func listEpisodes(st *store.Store, log *slog.Logger) http.HandlerFunc {
 			internalError(w, log, err)
 			return
 		}
-		resp := listResponse{Episodes: make([]episodeJSON, 0, limit)} // an empty list is [], never null
+		resp := listResponse{Episodes: make([]contract.Episode, 0, limit)} // an empty list is [], never null
 		if len(episodes) > limit {
 			episodes = episodes[:limit]
 			last := episodes[limit-1]
 			resp.NextCursor = encodeCursor(store.Position{FirstSeen: last.FirstSeen, ID: last.ID})
 		}
 		for _, e := range episodes {
-			resp.Episodes = append(resp.Episodes, toEpisodeJSON(e))
+			resp.Episodes = append(resp.Episodes, contract.Episode{ID: e.ID.String(), Fields: e.Fields()})
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}
@@ -181,12 +135,15 @@ func getEpisode(st *store.Store, log *slog.Logger) http.HandlerFunc {
 			internalError(w, log, err)
 			return
 		}
-		out := detailResponse{Episode: toEpisodeJSON(episode), Events: make([]eventJSON, 0, len(events))}
+		out := detailResponse{
+			Episode: contract.Episode{ID: episode.ID.String(), Fields: episode.Fields()},
+			Events:  make([]eventJSON, 0, len(events)),
+		}
 		for _, e := range events {
 			out.Events = append(out.Events, eventJSON{
 				EventID:    e.ID,
 				Severity:   e.Severity.String(),
-				OccurredAt: formatTime(e.OccurredAt),
+				OccurredAt: contract.FormatTime(e.OccurredAt),
 				Attributes: e.Attributes,
 			})
 		}

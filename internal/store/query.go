@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"panoptes/internal/contract"
 	"panoptes/internal/event"
 )
 
@@ -27,6 +28,26 @@ type Episode struct {
 	PeakSeverity event.Severity
 	CloseReason  *string    // nil while open
 	SettledAt    *time.Time // nil while open
+}
+
+// Fields renders the episode in the brief's shape, without its id.
+func (e Episode) Fields() contract.Fields {
+	f := contract.Fields{
+		SiteID:       e.Key.SiteID,
+		CameraID:     e.Key.CameraID,
+		Kind:         e.Key.Kind,
+		Status:       e.Status,
+		FirstSeen:    contract.FormatTime(e.FirstSeen),
+		LastSeen:     contract.FormatTime(e.LastSeen),
+		EventCount:   e.EventCount,
+		PeakSeverity: e.PeakSeverity.String(),
+		CloseReason:  e.CloseReason,
+	}
+	if e.SettledAt != nil {
+		settledAt := contract.FormatTime(*e.SettledAt)
+		f.SettledAt = &settledAt
+	}
+	return f
 }
 
 const episodeColumns = `id, site_id, camera_id, kind, status, first_seen, last_seen,
