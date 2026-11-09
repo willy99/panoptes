@@ -8,6 +8,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"panoptes/internal/crash"
+	"panoptes/internal/metrics"
 	"panoptes/internal/store"
 )
 
@@ -28,17 +30,23 @@ const (
 // outbox's row locks keep them from publishing the same row at once.
 func Run(ctx context.Context, st *store.Store, js jetstream.JetStream, log *slog.Logger) {
 	publish := func(ctx context.Context, a store.Announcement) error {
+		crash.Point(crash.RelayBeforePublish)
 		// Publish waits for JetStream's acknowledgement, so a row is marked
 		// published only once the stream holds it.
 		_, err := js.Publish(ctx, a.Subject, a.Payload, jetstream.WithMsgID(a.MsgID))
 		if err != nil {
 			log.Warn("publish failed", "subject", a.Subject, "msg_id", a.MsgID, "error", err.Error())
+			return err
 		}
-		return err
+		crash.Point(crash.RelayAfterPublish)
+		return nil
 	}
 	for {
 		txCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), txTimeout)
 		n, err := st.PublishOutbox(txCtx, batch, publish)
+		if pending, err := st.PendingAnnouncements(txCtx); err == nil {
+			metrics.OutboxPending.Set(float64(pending))
+		}
 		cancel()
 		wait := interval
 		switch {

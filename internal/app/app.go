@@ -85,7 +85,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if retry(loopCtx, log, "migrate the database", st.Migrate) == nil &&
 		retry(loopCtx, log, "provision the streams", provision) == nil {
 		loops.Go(func() { ingest.Run(loopCtx, consumer, st, log) })
-		loops.Go(func() { settle.Run(loopCtx, st, log) })
+		loops.Go(func() { settle.Run(loopCtx, st, cfg.QuietWindow, log) })
 		loops.Go(func() { relay.Run(loopCtx, st, js, log) })
 		a.started.Store(true)
 		log.Info("ready")

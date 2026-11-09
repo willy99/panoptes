@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"panoptes/internal/crash"
 	"panoptes/internal/event"
 	"panoptes/internal/metrics"
 	"panoptes/internal/store"
@@ -109,6 +110,7 @@ func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.L
 	// The transaction has committed; only now is the message acknowledged. If
 	// the process dies here or the ack is lost, the redelivery is a duplicate
 	// and changes nothing.
+	crash.Point(crash.IngestAfterCommit)
 	ack(msg, log)
 	if out.Duplicate {
 		log.Debug("duplicate event", "event_id", ev.ID)

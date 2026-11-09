@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"panoptes/internal/contract"
+	"panoptes/internal/crash"
 	"panoptes/internal/event"
 )
 
@@ -94,6 +95,7 @@ func (s *Store) Settle(ctx context.Context, id uuid.UUID) (Episode, bool, error)
 		return Episode{}, false, fmt.Errorf("queue announcement of %s: %w", id, err)
 	}
 
+	crash.Point(crash.SettleBeforeCommit)
 	if err := tx.Commit(ctx); err != nil {
 		return Episode{}, false, fmt.Errorf("commit: %w", err)
 	}

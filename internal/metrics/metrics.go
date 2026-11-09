@@ -21,6 +21,13 @@ var InvalidEvents = factory.NewCounter(prometheus.CounterOpts{
 	Help: "Messages acknowledged and skipped because they could not become an event.",
 })
 
+// OutboxPending is the number of announcements waiting to be published, as the
+// relay last counted it.
+var OutboxPending = factory.NewGauge(prometheus.GaugeOpts{
+	Name: "panoptes_outbox_pending",
+	Help: "Announcements in the outbox not yet published, sampled by the relay.",
+})
+
 // Handler serves the metrics in the Prometheus text format.
 func Handler() http.Handler {
 	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{})

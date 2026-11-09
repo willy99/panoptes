@@ -69,6 +69,7 @@ func TestASilentCameraSettlesQuietAndIsAnnouncedOnce(t *testing.T) {
 func TestABusyCameraSettlesEachChapter(t *testing.T) {
 	p := startReady(t)
 	s := newScenario(t)
+	time.Sleep(time.Second) // past the restart guard, so a due episode settles at the next sweep
 
 	// Chapter one: ten events half a second apart in device time, published
 	// at once. The next event, at 5s, is on its boundary.

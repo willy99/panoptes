@@ -16,6 +16,7 @@ type Config struct {
 	NATSURL     string        // NATS_URL
 	DatabaseURL string        // DATABASE_URL
 	HTTPAddr    string        // HTTP_ADDR: API, health and metrics listener
+	CrashAt     string        // PANOPTES_CRASH_AT: test only, the crash point to exit at
 }
 
 // Load reads the settings through getenv and reports every invalid variable at once,
@@ -53,6 +54,7 @@ func Load(getenv func(string) string) (Config, error) {
 		NATSURL:     text("NATS_URL", "nats://nats:4222"),
 		DatabaseURL: getenv("DATABASE_URL"),
 		HTTPAddr:    text("HTTP_ADDR", ":8080"),
+		CrashAt:     getenv("PANOPTES_CRASH_AT"),
 	}
 	if cfg.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL: required, for example postgres://user@host:5432/db"))

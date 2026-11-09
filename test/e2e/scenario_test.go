@@ -20,9 +20,13 @@ var published uint64
 // scenario is one test's own corner of the world: a site no other test uses,
 // so a test sees only its own episodes, and event ids that no other test uses.
 type scenario struct {
-	t    *testing.T
-	js   jetstream.JetStream
-	site string
+	t     *testing.T
+	js    jetstream.JetStream
+	site  string
+	valid map[string]bool // ids of the valid events published
+	// redelivered is set by tests that kill an instance: its unacknowledged
+	// messages are delivered again, so waitDrained does not count deliveries.
+	redelivered bool
 	// The consumer's delivery count and the published count when the
 	// scenario began, so that it can tell when Panoptes has handled every
 	// message published since.
@@ -39,6 +43,7 @@ func newScenario(t *testing.T) *scenario {
 		t:         t,
 		js:        js,
 		site:      "site-" + hex.EncodeToString(b),
+		valid:     map[string]bool{},
 		delivered: consumerInfo(t, js).Delivered.Consumer,
 		published: published,
 	}
@@ -91,6 +96,7 @@ func (s *scenario) publish(events ...testEvent) {
 			s.t.Fatalf("encode event: %v", err)
 		}
 		s.publishRaw("analytics.event.v1."+e.Site+"."+e.Camera+"."+e.Kind, payload.Bytes())
+		s.valid[e.ID] = true
 	}
 }
 
@@ -116,7 +122,7 @@ func (s *scenario) waitDrained() {
 		info := consumerInfo(s.t, s.js)
 		if info.NumPending == 0 && info.NumAckPending == 0 {
 			deliveries, messages := info.Delivered.Consumer-s.delivered, published-s.published
-			if deliveries != messages {
+			if deliveries != messages && !s.redelivered {
 				s.t.Fatalf("episoder made %d deliveries for %d published messages", deliveries, messages)
 			}
 			return

@@ -24,7 +24,18 @@ const txTimeout = 10 * time.Second
 // Run sweeps for due episodes until ctx ends, and settles each in its own
 // transaction. The episode a sweep is settling when shutdown begins is
 // finished; the rest wait for the next start.
-func Run(ctx context.Context, st *store.Store, log *slog.Logger) {
+//
+// The first sweep waits for guard, one quiet window: the restart guard. An
+// instance that was down while its episodes' next events queued up in the
+// stream would otherwise find those episodes silent and settle them before
+// it had read the events, turning them into corrections. A backlog that
+// takes longer than one quiet window to read can still do that.
+func Run(ctx context.Context, st *store.Store, guard time.Duration, log *slog.Logger) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(guard):
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

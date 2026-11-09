@@ -14,6 +14,7 @@ import (
 
 	"panoptes/internal/contract"
 	"panoptes/internal/correlation"
+	"panoptes/internal/crash"
 	"panoptes/internal/event"
 )
 
@@ -97,6 +98,7 @@ func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
 		if err != nil {
 			return Outcome{}, err
 		}
+		crash.Point(crash.IngestBeforeCommit)
 		return out, tx.Commit(ctx)
 	}
 
@@ -132,6 +134,7 @@ func (s *Store) Ingest(ctx context.Context, ev event.Event) (Outcome, error) {
 		}
 	}
 
+	crash.Point(crash.IngestBeforeCommit)
 	if err := tx.Commit(ctx); err != nil {
 		return Outcome{}, fmt.Errorf("commit: %w", err)
 	}
