@@ -4,11 +4,17 @@
 
 **Blocked by:** 06 (Settle and announce once)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Correlation tables cover placement into a settled episode before the event, into a settled episode after it, and into neither (a new open episode in the gap); the episode after rejected because joining it would reach the max duration; and the 10:09:45 timeline from ADR-0005.
-- [ ] End-to-end: a late event joins its settled episode, the API shows the new aggregates, one corrected message with revision 1 arrives after the settled message, and no second settled message arrives.
-- [ ] End-to-end: two late events for one episode produce revisions 1 and 2, in that order.
-- [ ] End-to-end: the 10:09:45 event joins the chapter that started at 10:00:00, and the next chapter's first seen does not move.
-- [ ] End-to-end: a late event that reaches no episode forms its own episode, which settles and is announced as a new one.
-- [ ] A row is never claimed while an earlier row for the same episode is unpublished.
+- [x] Correlation tables cover placement into a settled episode before the event, into a settled episode after it, and into neither (a new open episode in the gap); the episode after rejected because joining it would reach the max duration; and the 10:09:45 timeline from ADR-0005.
+- [x] End-to-end: a late event joins its settled episode, the API shows the new aggregates, one corrected message with revision 1 arrives after the settled message, and no second settled message arrives.
+- [x] End-to-end: two late events for one episode produce revisions 1 and 2, in that order.
+- [x] End-to-end: the 10:09:45 event joins the chapter that started at 10:00:00, and the next chapter's first seen does not move.
+- [x] End-to-end: a late event that reaches no episode forms its own episode, which settles and is announced as a new one.
+- [x] A row is never claimed while an earlier row for the same episode is unpublished.
+
+## Comments
+
+Done in the commit after 0bd1591. The relay's claim rule from ticket 06 already keeps an episode's rows in order: a row is claimed only when no earlier unpublished row of the same episode exists, and the two-corrections test sees settled, revision 1, revision 2 in stream order. The rule is not exercised with two relays racing; ticket 09 runs two instances.
+
+The revision is kept on the episode row and in the store's read model, but, as the spec says, it is not in the API's episode object or in the settled message.
