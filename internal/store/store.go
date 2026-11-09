@@ -15,6 +15,11 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// minConns is the smallest pool the service runs with: one connection per
+// ingest worker, plus room for the API's reads. A larger pool_max_conns in
+// DATABASE_URL is kept.
+const minConns = 8
+
 // Open creates the connection pool. It does not connect yet: the first query
 // does, so Open succeeds even while Postgres is still starting.
 func Open(databaseURL string) (*Store, error) {
@@ -22,6 +27,7 @@ func Open(databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
+	cfg.MaxConns = max(cfg.MaxConns, minConns)
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create connection pool: %w", err)

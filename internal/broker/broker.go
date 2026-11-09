@@ -60,11 +60,12 @@ func Connect(url string, log *slog.Logger) (*nats.Conn, error) {
 }
 
 // Provision makes sure the input stream, its consumer and a stream for the
-// announcements exist. Existing ones are used as they are, so a broker that
-// someone else set up keeps its settings. It is safe to run from several
-// instances at once, and a kill between its steps leaves no harm: the next
-// start finds what was created and creates the rest.
-func Provision(ctx context.Context, js jetstream.JetStream) error {
+// announcements exist, and returns the consumer to pull events from. Existing
+// ones are used as they are, so a broker that someone else set up keeps its
+// settings. It is safe to run from several instances at once, and a kill
+// between its steps leaves no harm: the next start finds what was created and
+// creates the rest.
+func Provision(ctx context.Context, js jetstream.JetStream) (jetstream.Consumer, error) {
 	err := ensureStream(ctx, js, jetstream.StreamConfig{
 		Name:      EventStream,
 		Subjects:  []string{EventSubjects},
@@ -72,18 +73,21 @@ func Provision(ctx context.Context, js jetstream.JetStream) error {
 		Storage:   jetstream.FileStorage,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	err = ensureConsumer(ctx, js, EventStream, jetstream.ConsumerConfig{
+	consumer, err := ensureConsumer(ctx, js, EventStream, jetstream.ConsumerConfig{
 		Durable:    Consumer,
 		AckPolicy:  jetstream.AckExplicitPolicy,
 		AckWait:    ackWait,
 		MaxDeliver: maxDeliver,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return ensureEpisodeStream(ctx, js)
+	if err := ensureEpisodeStream(ctx, js); err != nil {
+		return nil, err
+	}
+	return consumer, nil
 }
 
 // ensureEpisodeStream gives each announcement subject pattern a stream. A
@@ -169,17 +173,20 @@ func ensureStream(ctx context.Context, js jetstream.JetStream, cfg jetstream.Str
 	return nil
 }
 
-func ensureConsumer(ctx context.Context, js jetstream.JetStream, stream string, cfg jetstream.ConsumerConfig) error {
-	_, err := js.Consumer(ctx, stream, cfg.Durable)
+func ensureConsumer(ctx context.Context, js jetstream.JetStream, stream string, cfg jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	consumer, err := js.Consumer(ctx, stream, cfg.Durable)
 	if err == nil {
-		return nil
+		return consumer, nil
 	}
 	if !errors.Is(err, jetstream.ErrConsumerNotFound) {
-		return fmt.Errorf("look up consumer %s: %w", cfg.Durable, err)
+		return nil, fmt.Errorf("look up consumer %s: %w", cfg.Durable, err)
 	}
-	_, err = js.CreateConsumer(ctx, stream, cfg)
-	if err != nil && !errors.Is(err, jetstream.ErrConsumerExists) { // exists: another instance won the race
-		return fmt.Errorf("create consumer %s: %w", cfg.Durable, err)
+	consumer, err = js.CreateConsumer(ctx, stream, cfg)
+	if errors.Is(err, jetstream.ErrConsumerExists) { // another instance won the race
+		consumer, err = js.Consumer(ctx, stream, cfg.Durable)
 	}
-	return nil
+	if err != nil {
+		return nil, fmt.Errorf("create consumer %s: %w", cfg.Durable, err)
+	}
+	return consumer, nil
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"panoptes/internal/api"
 	"panoptes/internal/broker"
 	"panoptes/internal/config"
+	"panoptes/internal/ingest"
 	"panoptes/internal/store"
 )
 
@@ -61,23 +63,43 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	go func() { serveErr <- srv.Serve(ln) }()
 	log.Info("http server listening", "addr", ln.Addr().String())
 
+	// The loops run on their own context, so that a failed HTTP server stops
+	// them the same way a SIGTERM does.
+	work, stopWork := context.WithCancel(ctx)
+	defer stopWork()
+	var loops sync.WaitGroup
+
 	// Startup work retries until it succeeds, because Postgres or NATS may still
 	// be starting. A SIGTERM during startup ends the retries and shuts down cleanly.
-	provision := func(ctx context.Context) error { return broker.Provision(ctx, js) }
-	if retry(ctx, log, "migrate the database", st.Migrate) == nil &&
-		retry(ctx, log, "provision the streams", provision) == nil {
+	var consumer jetstream.Consumer
+	provision := func(ctx context.Context) (err error) {
+		consumer, err = broker.Provision(ctx, js)
+		return err
+	}
+	if retry(work, log, "migrate the database", st.Migrate) == nil &&
+		retry(work, log, "provision the streams", provision) == nil {
+		loops.Go(func() { ingest.Run(work, consumer, st, log) })
 		a.started.Store(true)
 		log.Info("ready")
 	}
 
+	var runErr error
 	select {
 	case <-ctx.Done():
 	case err := <-serveErr:
-		return fmt.Errorf("http server: %w", err)
+		runErr = fmt.Errorf("http server: %w", err)
 	}
 
+	// Shutdown: /readyz turns 503, the loops stop taking new work and finish
+	// what they hold, then the HTTP server stops. The deferred closes of NATS
+	// and the pool run last; closing NATS flushes the final acks.
 	a.stopping.Store(true)
 	log.Info("shutting down")
+	stopWork()
+	loops.Wait()
+	if runErr != nil {
+		return runErr
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
