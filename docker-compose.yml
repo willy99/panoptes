@@ -29,8 +29,7 @@ services:
     build: .
     environment:
       DATABASE_URL: postgres://panoptes@postgres:5432/panoptes?sslmode=disable
-      # NATS_URL (nats://nats:4222), HTTP_ADDR (:8080), EPISODE_QUIET_WINDOW (60s),
-      # EPISODE_MAX_DURATION (10m) and EPISODE_SETTLE_GRACE (1s) keep their defaults; set them here to change them.
+      # NATS_URL, HTTP_ADDR and the EPISODE_* durations keep their defaults; set them here to change them.
     ports:
       - "8080:8080"
     depends_on:
@@ -38,4 +37,3 @@ services:
       postgres: { condition: service_healthy }
     # SIGTERM first, SIGKILL only after 30s: the service's own shutdown deadline is 20s.
     stop_grace_period: 30s
-    restart: unless-stopped

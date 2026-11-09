@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"sort"
 	"strings"
+	"time"
 )
 
 //go:embed migrations/*.sql
@@ -40,8 +41,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("take migration lock: %w", err)
 	}
 	defer func() {
-		// A fresh context: the unlock must run even when ctx is already cancelled.
-		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey)
+		// A fresh context, because ctx may already be cancelled, with a deadline,
+		// so a dead connection cannot hang shutdown.
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
+			// The session would keep the lock inside the pool; closing the
+			// connection makes Postgres release it, and the pool discards it.
+			_ = conn.Conn().Close(unlockCtx)
+		}
 	}()
 
 	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (

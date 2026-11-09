@@ -11,5 +11,5 @@ Postgres and NATS share no transaction, so the transaction that settles an episo
 ## Consequences
 
 - The once-only guarantee holds for anyone reading `episode.settled.*` through JetStream. A core NATS subscriber can still see the copy in the rare publish-then-kill case, because JetStream removes duplicates when it stores a message, not on the wire (checked on NATS 2.12). We do not know yet which way the grading suite listens.
-- The service creates a stream for `episode.>` at startup unless one already covers those subjects; JetStream rejects a second stream with overlapping subjects.
+- At startup the service gives `episode.settled.>` and `episode.corrected.>` a stream, its own `EPISODES`, unless an existing stream already covers a pattern in full. JetStream rejects overlapping streams, so `EPISODES` takes only the uncovered patterns rather than all of `episode.>`.
 - JetStream remembers message ids only for the stream's duplicate window (2 minutes by default). A full outage that starts between a publish and its mark and lasts longer than that window can still produce a duplicate; this is a known limit.

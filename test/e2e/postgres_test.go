@@ -12,6 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// A smoke test: two instances can start together on an empty database. It cannot
+// prove the migration lock is needed: without the lock the collision is rare,
+// and when it happens the loser's transaction rolls back and startup retries.
 func TestTwoInstancesMigrateTheSameDatabaseAtOnce(t *testing.T) {
 	dbURL := freshDatabase(t)
 
@@ -21,10 +24,10 @@ func TestTwoInstancesMigrateTheSameDatabaseAtOnce(t *testing.T) {
 	a.waitReady()
 	b.waitReady()
 
-	// Postgres was up the whole time, so any retry means the two migrations collided.
+	// Postgres was up the whole time, so a migration retry means the two collided.
 	for _, p := range []*proc{a, b} {
-		if p.output.contains(`"msg":"retrying"`) {
-			t.Fatalf("an instance retried its startup:\n%s", p.output.String())
+		if p.output.contains(`"step":"migrate the database"`) {
+			t.Fatalf("an instance retried its migration:\n%s", p.output.String())
 		}
 	}
 }
@@ -34,6 +37,7 @@ func TestTwoInstancesMigrateTheSameDatabaseAtOnce(t *testing.T) {
 // setup only: the tests never read the service's tables.
 func freshDatabase(t *testing.T) string {
 	t.Helper()
+	requireStack(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

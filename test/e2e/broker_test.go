@@ -36,9 +36,11 @@ func TestStartupCreatesTheStreamsAndTheConsumer(t *testing.T) {
 	}
 	episodes := streamConfig(t, js, "EPISODES")
 	if !slices.Equal(episodes.Subjects, []string{"episode.settled.>", "episode.corrected.>"}) ||
+		episodes.Retention != jetstream.LimitsPolicy || episodes.Storage != jetstream.FileStorage ||
 		episodes.Duplicates != 2*time.Minute {
-		t.Errorf("EPISODES: subjects %v, duplicate window %v; want both announcement subjects and 2m",
-			episodes.Subjects, episodes.Duplicates)
+		t.Errorf("EPISODES: subjects %v, retention %v, storage %v, duplicate window %v; "+
+			"want both announcement subjects, Limits, File, 2m",
+			episodes.Subjects, episodes.Retention, episodes.Storage, episodes.Duplicates)
 	}
 }
 
@@ -63,6 +65,56 @@ func TestAnExistingEventStreamIsUsedAsItIs(t *testing.T) {
 	}
 	if _, err := js.Consumer(ctx(t), "ANALYTICS_EVENTS", "episoder"); err != nil {
 		t.Errorf("consumer episoder was not added to the existing stream: %v", err)
+	}
+}
+
+func TestAnExistingConsumerIsUsedAsItIs(t *testing.T) {
+	js := jetStream(t)
+	deleteStreams(t, js, "ANALYTICS_EVENTS")
+	_, err := js.CreateStream(ctx(t), jetstream.StreamConfig{
+		Name:      "ANALYTICS_EVENTS",
+		Subjects:  []string{"analytics.event.v1.>"},
+		Retention: jetstream.WorkQueuePolicy,
+	})
+	if err != nil {
+		t.Fatalf("create ANALYTICS_EVENTS: %v", err)
+	}
+	t.Cleanup(func() { deleteStreams(t, js, "ANALYTICS_EVENTS") })
+	_, err = js.CreateConsumer(ctx(t), "ANALYTICS_EVENTS", jetstream.ConsumerConfig{
+		Durable:    "episoder",
+		AckPolicy:  jetstream.AckExplicitPolicy,
+		AckWait:    45 * time.Second, // both differ from what the service would create
+		MaxDeliver: 3,
+	})
+	if err != nil {
+		t.Fatalf("create consumer episoder: %v", err)
+	}
+
+	startReady(t)
+
+	consumer, err := js.Consumer(ctx(t), "ANALYTICS_EVENTS", "episoder")
+	if err != nil {
+		t.Fatalf("consumer episoder: %v", err)
+	}
+	if c := consumer.CachedInfo().Config; c.AckWait != 45*time.Second || c.MaxDeliver != 3 {
+		t.Errorf("episoder: AckWait %v, MaxDeliver %d; want the 45s and 3 it was created with", c.AckWait, c.MaxDeliver)
+	}
+}
+
+func TestEPISODESGainsASubjectThatLostItsStream(t *testing.T) {
+	js := jetStream(t)
+	deleteStreams(t, js, "EPISODES")
+	_, err := js.CreateStream(ctx(t), jetstream.StreamConfig{Name: "EPISODES", Subjects: []string{"episode.corrected.>"}})
+	if err != nil {
+		t.Fatalf("create EPISODES: %v", err)
+	}
+	t.Cleanup(func() { deleteStreams(t, js, "EPISODES") })
+
+	startReady(t)
+
+	got := streamConfig(t, js, "EPISODES").Subjects
+	if !slices.Contains(got, "episode.settled.>") || !slices.Contains(got, "episode.corrected.>") {
+		t.Errorf("EPISODES subjects = %v, want both announcement subjects", got)
 	}
 }
 
@@ -101,6 +153,7 @@ func TestNoEpisodeStreamWhenAnotherStreamCoversBothSubjects(t *testing.T) {
 // jetStream connects to the test NATS server.
 func jetStream(t *testing.T) jetstream.JetStream {
 	t.Helper()
+	requireStack(t)
 	nc, err := nats.Connect(os.Getenv("NATS_URL"))
 	if err != nil {
 		t.Fatalf("connect to nats: %v", err)

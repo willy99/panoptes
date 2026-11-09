@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -30,9 +32,9 @@ const (
 	maxDeliver = 10
 )
 
-// duplicateWindow is how long JetStream remembers a Nats-Msg-Id on the episode
-// stream; a republish within it is dropped (ADR-0004).
-const duplicateWindow = 2 * time.Minute
+// dedupWindow is how long JetStream remembers a Nats-Msg-Id on the episode
+// stream; an announcement published again within it is dropped (ADR-0004).
+const dedupWindow = 2 * time.Minute
 
 // Connect opens a NATS connection that keeps reconnecting for as long as the
 // process runs, including when NATS is not up yet at startup.
@@ -60,7 +62,8 @@ func Connect(url string, log *slog.Logger) (*nats.Conn, error) {
 // Provision makes sure the input stream, its consumer and a stream for the
 // announcements exist. Existing ones are used as they are, so a broker that
 // someone else set up keeps its settings. It is safe to run from several
-// instances at once.
+// instances at once, and a kill between its steps leaves no harm: the next
+// start finds what was created and creates the rest.
 func Provision(ctx context.Context, js jetstream.JetStream) error {
 	err := ensureStream(ctx, js, jetstream.StreamConfig{
 		Name:      EventStream,
@@ -80,44 +83,75 @@ func Provision(ctx context.Context, js jetstream.JetStream) error {
 	if err != nil {
 		return err
 	}
+	return ensureEpisodeStream(ctx, js)
+}
 
-	// JetStream rejects a stream whose subjects overlap another stream's, so the
-	// episode stream takes only the announcement subjects no stream covers yet.
+// ensureEpisodeStream gives each announcement subject pattern a stream. A
+// pattern that some stream already covers in full is left to that stream; the
+// rest go to EPISODES, which is ours, so it is created or extended. JetStream
+// rejects overlapping streams, so a stream that covers only part of a pattern
+// makes this fail, and startup keeps retrying with that error in the log.
+func ensureEpisodeStream(ctx context.Context, js jetstream.JetStream) error {
+	var subjects []string // every subject pattern of every stream
+	streams := js.ListStreams(ctx)
+	for info := range streams.Info() {
+		subjects = append(subjects, info.Config.Subjects...)
+	}
+	if err := streams.Err(); err != nil {
+		return fmt.Errorf("list streams: %w", err)
+	}
+
 	var missing []string
-	for _, subjects := range []string{SettledSubjects, CorrectedSubjects} {
-		covered, err := covered(ctx, js, subjects)
-		if err != nil {
-			return err
-		}
-		if !covered {
-			missing = append(missing, subjects)
+	for _, pattern := range []string{SettledSubjects, CorrectedSubjects} {
+		if !slices.ContainsFunc(subjects, func(s string) bool { return covers(s, pattern) }) {
+			missing = append(missing, pattern)
 		}
 	}
 	if len(missing) == 0 {
 		return nil
 	}
-	return ensureStream(ctx, js, jetstream.StreamConfig{
-		Name:       EpisodeStream,
-		Subjects:   missing,
-		Retention:  jetstream.LimitsPolicy,
-		Storage:    jetstream.FileStorage,
-		Duplicates: duplicateWindow,
-	})
+
+	s, err := js.Stream(ctx, EpisodeStream)
+	switch {
+	case errors.Is(err, jetstream.ErrStreamNotFound):
+		_, err = js.CreateStream(ctx, jetstream.StreamConfig{
+			Name:       EpisodeStream,
+			Subjects:   missing,
+			Retention:  jetstream.LimitsPolicy,
+			Storage:    jetstream.FileStorage,
+			Duplicates: dedupWindow,
+		})
+		if errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+			return errors.New("another instance created EPISODES at the same time; checking again")
+		}
+	case err == nil:
+		cfg := s.CachedInfo().Config
+		cfg.Subjects = append(cfg.Subjects, missing...)
+		_, err = js.UpdateStream(ctx, cfg)
+	}
+	if err != nil {
+		return fmt.Errorf("stream %s for %v: %w", EpisodeStream, missing, err)
+	}
+	return nil
 }
 
-// covered reports whether some stream already captures subjects such as
-// "episode.settled.>", probed with one concrete subject.
-func covered(ctx context.Context, js jetstream.JetStream, subjects string) (bool, error) {
-	probe := subjects[:len(subjects)-1] + "site.camera"
-	_, err := js.StreamNameBySubject(ctx, probe)
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, jetstream.ErrStreamNotFound):
-		return false, nil
-	default:
-		return false, fmt.Errorf("look up the stream for %s: %w", probe, err)
+// covers reports whether subject pattern p matches every subject that pattern
+// t matches, for a t that ends in ">", such as "episode.settled.>". For that t,
+// "episode.>", "*.settled.>" and ">" cover it; "episode.settled.site.>" does not.
+func covers(p, t string) bool {
+	pt, tt := strings.Split(p, "."), strings.Split(t, ".")
+	for i, token := range pt {
+		if token == ">" {
+			return true
+		}
+		if i >= len(tt) || tt[i] == ">" {
+			return false // t stays open here while p is narrower
+		}
+		if token != "*" && token != tt[i] {
+			return false
+		}
 	}
+	return false // without ">" p cannot cover t's open tail
 }
 
 func ensureStream(ctx context.Context, js jetstream.JetStream, cfg jetstream.StreamConfig) error {

@@ -6,9 +6,9 @@ COMPOSE_TEST := docker compose -f docker-compose.test.yml
 up:
 	docker compose up -d --build --wait
 
-## down: stop and remove the stack started by `make up`
+## down: stop and remove the stack started by `make up`, including its data
 down:
-	docker compose down --remove-orphans
+	docker compose down --volumes --remove-orphans
 
 ## logs: follow the service's logs
 logs:

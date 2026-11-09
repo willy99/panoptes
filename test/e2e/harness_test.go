@@ -25,10 +25,21 @@ import (
 // binary is the path of the Panoptes binary built once for the whole run.
 var binary string
 
+// skipReason is set when there is no NATS or Postgres to test against.
+var skipReason string
+
+// testSettings are the short windows from the spec's Seam A: device times in
+// payloads are arbitrary, so only the settle waits depend on these.
+var testSettings = []string{
+	"EPISODE_QUIET_WINDOW=1s",
+	"EPISODE_MAX_DURATION=5s",
+	"EPISODE_SETTLE_GRACE=200ms",
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv("NATS_URL") == "" || os.Getenv("DATABASE_URL") == "" {
-		fmt.Println("e2e: NATS_URL or DATABASE_URL is not set, skipping (make test sets both)")
-		os.Exit(0)
+		skipReason = "NATS_URL or DATABASE_URL is not set; make test sets both"
+		os.Exit(m.Run())
 	}
 	dir, err := os.MkdirTemp("", "panoptes-e2e")
 	if err != nil {
@@ -57,10 +68,19 @@ type proc struct {
 	code   int           // exit code, valid after done is closed
 }
 
-// start launches an instance with the test's environment plus extra
-// KEY=VALUE pairs, which override it. It does not wait for readiness.
+// requireStack skips the test when there is no NATS or Postgres to test against.
+func requireStack(t *testing.T) {
+	t.Helper()
+	if skipReason != "" {
+		t.Skip(skipReason)
+	}
+}
+
+// start launches an instance with the test's environment and test settings,
+// plus extra KEY=VALUE pairs, which override both. It does not wait for readiness.
 func start(t *testing.T, extra ...string) *proc {
 	t.Helper()
+	requireStack(t)
 	port := freePort(t)
 	p := &proc{
 		t:      t,
@@ -68,7 +88,8 @@ func start(t *testing.T, extra ...string) *proc {
 		output: &lockedBuffer{},
 		done:   make(chan struct{}),
 	}
-	env := append(os.Environ(), "HTTP_ADDR=127.0.0.1:"+port)
+	env := append(os.Environ(), testSettings...)
+	env = append(env, "HTTP_ADDR=127.0.0.1:"+port)
 	p.cmd = exec.Command(binary)
 	p.cmd.Env = append(env, extra...) // later entries win over earlier ones
 	p.cmd.Stdout, p.cmd.Stderr = p.output, p.output

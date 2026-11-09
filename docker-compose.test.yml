@@ -9,6 +9,8 @@ services:
 
   postgres:
     extends: { file: docker-compose.yml, service: postgres }
+    # Data in memory: faster, and no volume is left behind after the run.
+    tmpfs: [/var/lib/postgresql/data]
 
   test:
     image: golang:1.27

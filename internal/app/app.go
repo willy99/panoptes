@@ -25,8 +25,6 @@ import (
 const shutdownTimeout = 20 * time.Second
 
 type app struct {
-	cfg      config.Config
-	log      *slog.Logger
 	store    *store.Store
 	nc       *nats.Conn
 	started  atomic.Bool // startup work is done
@@ -50,7 +48,7 @@ func Run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
-	a := &app{cfg: cfg, log: log, store: st, nc: nc}
+	a := &app{store: st, nc: nc}
 
 	// The HTTP server starts first, so /healthz answers while the rest starts up
 	// and /readyz can say what the service is still waiting for.
