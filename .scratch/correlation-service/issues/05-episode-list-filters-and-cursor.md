@@ -4,12 +4,16 @@
 
 **Blocked by:** 02 (Events in, episodes out)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] End-to-end: each filter on its own and combined; an empty parameter counts as absent.
-- [ ] End-to-end: an episode whose first seen equals `from` is included, and one whose first seen equals `to` is not; when `from` is not before `to` the result is empty.
-- [ ] End-to-end: episodes with equal first seen come back in id-descending order.
-- [ ] End-to-end: walking every page with `limit=2` returns each episode exactly once, and the last page has `next_cursor` equal to `""`.
-- [ ] End-to-end: no `limit` gives at most 50 results and `limit=500` gives at most 200; `limit=0` and `limit=abc` return 400.
-- [ ] End-to-end: a cursor that does not decode returns 400, and so do an unknown `kind` or `status` and a `from` or `to` that is not RFC 3339.
-- [ ] End-to-end: an empty result is `{"episodes": [], "next_cursor": ""}`.
+- [x] End-to-end: each filter on its own and combined; an empty parameter counts as absent.
+- [x] End-to-end: an episode whose first seen equals `from` is included, and one whose first seen equals `to` is not; when `from` is not before `to` the result is empty.
+- [x] End-to-end: episodes with equal first seen come back in id-descending order.
+- [x] End-to-end: walking every page with `limit=2` returns each episode exactly once, and the last page has `next_cursor` equal to `""`.
+- [x] End-to-end: no `limit` gives at most 50 results and `limit=500` gives at most 200; `limit=0` and `limit=abc` return 400.
+- [x] End-to-end: a cursor that does not decode returns 400, and so do an unknown `kind` or `status` and a `from` or `to` that is not RFC 3339.
+- [x] End-to-end: an empty result is `{"episodes": [], "next_cursor": ""}`.
+
+## Comments
+
+Done in the commit after cabf0ef. The cursor holds the last row's first seen and id, so the order is total even when first seen ties; the walking test splits a tied pair across pages, and dropping the id from the keyset makes it fail. A cursor is not tied to the filters it came with: reused with other filters, it simply starts after the same place. As the spec says, pages are stable only for episodes that do not change while a client pages, because an open episode can move its first seen or merge away.
