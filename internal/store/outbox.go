@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"panoptes/internal/contract"
 )
 
 // Announcement is one outbox row to publish.
@@ -13,6 +15,25 @@ type Announcement struct {
 	Subject string
 	MsgID   string // the Nats-Msg-Id, so JetStream drops a second copy
 	Payload []byte
+}
+
+// enqueue writes the episode's announcement into the outbox, as of the
+// calling transaction: the settled announcement at revision 0, a corrected
+// one with its revision after that. The message id makes a second publish of
+// the same row a copy that JetStream drops.
+func enqueue(ctx context.Context, tx pgx.Tx, ep Episode) error {
+	a := contract.Announcement{EpisodeID: ep.ID.String(), Fields: ep.Fields()}
+	subject, msgID := "episode.settled.", "settled:"+ep.ID.String()
+	if ep.Revision > 0 {
+		a.Revision = &ep.Revision
+		subject, msgID = "episode.corrected.", fmt.Sprintf("corrected:%s:%d", ep.ID, ep.Revision)
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO outbox (episode_id, subject, msg_id, payload) VALUES ($1, $2, $3, $4)`,
+		ep.ID, subject+ep.Key.SiteID+"."+ep.Key.CameraID, msgID, string(contract.Marshal(a)))
+	if err != nil {
+		return fmt.Errorf("queue announcement %s: %w", msgID, err)
+	}
+	return nil
 }
 
 // PublishOutbox publishes up to limit unpublished announcements, in one

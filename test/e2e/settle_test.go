@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"slices"
 	"testing"
 	"time"
@@ -35,7 +36,12 @@ func TestASilentCameraSettlesQuietAndIsAnnouncedOnce(t *testing.T) {
 		t.Errorf("settled %v after the last event was published, before the 1s quiet window", waited)
 	}
 	if settled.CloseReason == nil || *settled.CloseReason != "quiet" || settled.SettledAt == nil {
-		t.Errorf("close_reason %v, settled_at %v; want quiet and a time", settled.CloseReason, settled.SettledAt)
+		t.Fatalf("close_reason %v, settled_at %v; want quiet and a time", settled.CloseReason, settled.SettledAt)
+	}
+	// settled_at comes from the service's own clock, so it carries exactly the
+	// brief's milliseconds.
+	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`).MatchString(*settled.SettledAt) {
+		t.Errorf("settled_at %q is not UTC with milliseconds", *settled.SettledAt)
 	}
 
 	time.Sleep(time.Second) // room for a second announcement, which must not come

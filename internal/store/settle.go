@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"panoptes/internal/contract"
 	"panoptes/internal/crash"
 	"panoptes/internal/event"
 )
@@ -42,7 +41,8 @@ func (s *Store) DueEpisodes(ctx context.Context, limit int) ([]uuid.UUID, error)
 //  2. Take the key's lock, so no ingest changes the episode meanwhile.
 //  3. Check that it is still open and still due, since an event may have
 //     arrived after DueEpisodes looked. If so, set status settled, settled_at
-//     from the Postgres clock, and the close reason: the pending one, or quiet.
+//     from the Postgres clock to the millisecond, and the close reason: the
+//     pending one, or quiet.
 //  4. Write the announcement to the outbox: the episode object as of this
 //     transaction, with message id settled:<id>.
 //  5. Commit.
@@ -74,7 +74,7 @@ func (s *Store) Settle(ctx context.Context, id uuid.UUID) (Episode, bool, error)
 	ep, err := scanEpisode(tx.QueryRow(ctx, `
 		UPDATE episodes SET
 			status               = 'settled',
-			settled_at           = now(),
+			settled_at           = date_trunc('milliseconds', now()), -- the brief's format
 			close_reason         = COALESCE(pending_close_reason, 'quiet'),
 			pending_close_reason = NULL
 		WHERE id = $3 AND `+dueCondition+`
@@ -87,12 +87,8 @@ func (s *Store) Settle(ctx context.Context, id uuid.UUID) (Episode, bool, error)
 		return Episode{}, false, fmt.Errorf("settle episode %s: %w", id, err)
 	}
 
-	payload := contract.Marshal(contract.Announcement{EpisodeID: ep.ID.String(), Fields: ep.Fields()})
-	_, err = tx.Exec(ctx, `
-		INSERT INTO outbox (episode_id, subject, msg_id, payload) VALUES ($1, $2, $3, $4)`,
-		ep.ID, "episode.settled."+key.SiteID+"."+key.CameraID, "settled:"+ep.ID.String(), string(payload))
-	if err != nil {
-		return Episode{}, false, fmt.Errorf("queue announcement of %s: %w", id, err)
+	if err := enqueue(ctx, tx, ep); err != nil {
+		return Episode{}, false, err
 	}
 
 	crash.Point(crash.SettleBeforeCommit)

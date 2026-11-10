@@ -166,3 +166,44 @@ func TestALateEventThatReachesNoEpisodeStartsItsOwn(t *testing.T) {
 		t.Errorf("announcements %v, want %v", summary(got), want)
 	}
 }
+
+// A correction can move a settled episode's first seen back, and that can
+// change why the open episode before it ends. Here the open episode P runs
+// from 0s to 4.3s, so its chapter boundary is 5s, and the settled episode N
+// starts at 6s: more than a quiet window after P's last event, so P has ended
+// as quiet. A late event at 5.05s is past P's boundary and within a quiet
+// window of N, so it corrects N, whose first seen moves to 5.05s. Now the
+// episode after P starts at P's boundary and within a quiet window of its
+// last event: P must settle as max_duration.
+func TestACorrectionThatMovesTheNextEpisodeBackChangesWhyTheOpenOneEnds(t *testing.T) {
+	// A long grace keeps P open until the late event has been read.
+	p := startReady(t, "EPISODE_SETTLE_GRACE=2s")
+	s := newScenario(t)
+
+	s.publish(s.event(1, "info", 6*time.Second), s.event(2, "info", 6500*ms))
+	s.waitDrained()
+	n := s.episodes(p)[0]
+	s.waitSettled(p, n.ID)
+
+	for i := range 9 { // 0s to 4s
+		s.publish(s.event(10+i, "info", time.Duration(i)*500*ms))
+	}
+	s.publish(s.event(19, "info", 4300*ms))
+	s.waitDrained()
+	s.publish(s.event(20, "info", 5050*ms))
+	s.waitDrained()
+
+	nAfter, _ := s.episode(p, n.ID)
+	if nAfter.FirstSeen != at(5050*ms) || nAfter.EventCount != 3 {
+		t.Fatalf("N after the late event: first seen %s, %d events; want %s and 3", nAfter.FirstSeen, nAfter.EventCount, at(5050*ms))
+	}
+	var pID string
+	for _, e := range s.episodes(p) {
+		if e.FirstSeen == at(0) {
+			pID = e.ID
+		}
+	}
+	if settled := s.waitSettled(p, pID); *settled.CloseReason != "max_duration" || settled.EventCount != 10 {
+		t.Errorf("P settled as %s with %d events, want max_duration with 10", *settled.CloseReason, settled.EventCount)
+	}
+}
