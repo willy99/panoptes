@@ -18,15 +18,15 @@ const (
 	RelayAfterPublish  = "relay.after_publish" // published, not yet marked
 )
 
-// Points lists every named point.
-var Points = []string{IngestBeforeCommit, IngestAfterCommit, SettleBeforeCommit, RelayBeforePublish, RelayAfterPublish}
+// points lists every named point.
+var points = []string{IngestBeforeCommit, IngestAfterCommit, SettleBeforeCommit, RelayBeforePublish, RelayAfterPublish}
 
 // armed is the point to exit at, set once at startup.
 var armed string
 
 // Arm makes the process exit at the named point. An empty name disarms.
 func Arm(point string) error {
-	if point != "" && !slices.Contains(Points, point) {
+	if point != "" && !slices.Contains(points, point) {
 		return fmt.Errorf("unknown crash point %q", point)
 	}
 	armed = point

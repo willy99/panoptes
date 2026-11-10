@@ -16,9 +16,10 @@ import (
 // anyRedelivery lets waitDrained accept any number of redeliveries.
 const anyRedelivery = 1 << 32
 
-// published counts the messages every scenario has published. Tests run one
-// at a time, so the deliveries the consumer makes during a test answer to it.
-var published uint64
+// publishedInTotal counts the messages every scenario has published. Tests
+// run one at a time, so the deliveries the consumer makes during a test answer
+// to it.
+var publishedInTotal uint64
 
 // scenario is one test's own corner of the world: a site no other test uses,
 // so a test sees only its own episodes, and event ids that no other test uses.
@@ -48,7 +49,7 @@ func newScenario(t *testing.T) *scenario {
 		site:      "site-" + hex.EncodeToString(b),
 		valid:     map[string]bool{},
 		delivered: consumerInfo(t, js).Delivered.Consumer,
-		published: published,
+		published: publishedInTotal,
 	}
 }
 
@@ -109,7 +110,7 @@ func (s *scenario) publishRaw(subject string, payload []byte) {
 	if _, err := s.js.Publish(ctx(s.t), subject, payload); err != nil {
 		s.t.Fatalf("publish on %s: %v", subject, err)
 	}
-	published++
+	publishedInTotal++
 }
 
 // waitDrained waits until the episoder consumer has nothing left to deliver
@@ -124,7 +125,7 @@ func (s *scenario) waitDrained() {
 	for {
 		info := consumerInfo(s.t, s.js)
 		if info.NumPending == 0 && info.NumAckPending == 0 {
-			deliveries, messages := info.Delivered.Consumer-s.delivered, published-s.published
+			deliveries, messages := info.Delivered.Consumer-s.delivered, publishedInTotal-s.published
 			if deliveries < messages || deliveries > messages+s.extraDeliveries {
 				s.t.Fatalf("episoder made %d deliveries for %d published messages", deliveries, messages)
 			}

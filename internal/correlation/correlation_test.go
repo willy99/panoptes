@@ -74,6 +74,12 @@ func TestRebuild(t *testing.T) {
 			want: []wantEpisode{{id: "A", events: "10:00:00 10:01:00"}},
 		},
 		{
+			name: "a gap one millisecond shorter than the quiet window stays in the episode",
+			open: map[string]string{"A": "10:00:00"},
+			add:  "10:00:59.999",
+			want: []wantEpisode{{id: "A", events: "10:00:00 10:00:59.999"}},
+		},
+		{
 			name: "a gap one millisecond longer starts a new episode",
 			open: map[string]string{"A": "10:00:00"},
 			add:  "10:01:00.001",
@@ -89,6 +95,15 @@ func TestRebuild(t *testing.T) {
 			want: []wantEpisode{
 				{id: "A", events: every(t, "10:00:00", "10:09:00", time.Minute), pending: MaxDuration},
 				{id: "new1", events: "10:10:00"},
+			},
+		},
+		{
+			name: "an event one millisecond past the boundary starts the next chapter",
+			open: map[string]string{"A": every(t, "10:00:00", "10:09:00", time.Minute) + " 10:09:30"},
+			add:  "10:10:00.001",
+			want: []wantEpisode{
+				{id: "A", events: every(t, "10:00:00", "10:09:00", time.Minute) + " 10:09:30", pending: MaxDuration},
+				{id: "new1", events: "10:10:00.001"},
 			},
 		},
 		{
@@ -271,8 +286,15 @@ func TestRebuildIgnoresArrivalOrder(t *testing.T) {
 				}
 			}
 		}
+		// The expected order is the rule written out here, not the module's own
+		// comparison: device time, then event_id byte by byte.
 		sorted := slices.Clone(events)
-		slices.SortFunc(sorted, byDeviceTime)
+		slices.SortFunc(sorted, func(a, b Event) int {
+			if !a.OccurredAt.Equal(b.OccurredAt) {
+				return map[bool]int{true: -1, false: 1}[a.OccurredAt.Before(b.OccurredAt)]
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
 		if !slices.EqualFunc(flat, sorted, func(a, b Event) bool { return a.ID == b.ID }) {
 			t.Fatalf("trial %d: the episodes do not hold every event exactly once, in device-time order", trial)
 		}
@@ -310,6 +332,18 @@ func TestPlace(t *testing.T) {
 			after:  neighbour("10:10:00-10:12:00", true),
 			at:     "10:09:00",
 			want:   "after",
+		},
+		{
+			name:  "not into the episode after, one millisecond beyond a quiet window before its first seen",
+			after: neighbour("10:10:00-10:12:00", true),
+			at:    "10:08:59.999",
+			want:  "none",
+		},
+		{
+			name:  "into the episode after, exactly one quiet window before its first seen",
+			after: neighbour("10:10:00-10:12:00", true),
+			at:    "10:09:00",
+			want:  "after",
 		},
 		{
 			name:   "into neither, in the gap between two settled episodes",

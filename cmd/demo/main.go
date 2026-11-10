@@ -7,7 +7,7 @@
 //   - cam-01 person_detected: a busy camera for 11 minutes of device time, so
 //     the max duration cuts it into two chapters; once the first chapter's
 //     announcement arrives, a late event before the boundary corrects it;
-//   - cam-02 loitering: two incidents five minutes apart, two episodes;
+//   - cam-02 loitering: two bursts of activity five minutes apart, two episodes;
 //   - cam-02 tamper: warnings and one critical, so the peak is critical;
 //   - about one event in eight published twice, everything shuffled;
 //   - four invalid messages.
@@ -84,7 +84,7 @@ func run(natsURL string, seed uint64, watch time.Duration, api string) error {
 	for offset := time.Duration(0); offset <= 11*time.Minute; offset += 20 * time.Second {
 		events = append(events, ev("cam-01", "person_detected", []string{"info", "notice", "warning"}[rng.IntN(3)], offset))
 	}
-	// Two loitering incidents, five minutes apart.
+	// Two bursts of loitering, five minutes apart.
 	for _, offset := range []time.Duration{0, 30 * time.Second, 45 * time.Second, 6 * time.Minute, 6*time.Minute + 15*time.Second} {
 		events = append(events, ev("cam-02", "loitering", "notice", offset))
 	}

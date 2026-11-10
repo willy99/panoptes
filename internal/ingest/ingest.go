@@ -169,7 +169,10 @@ func handle(ctx context.Context, msg jetstream.Msg, st *store.Store, log *slog.L
 
 // skipInvalid acknowledges, counts and logs a message that can never become
 // an event. Redelivering it would change nothing, so it must not hold up the
-// stream or use up its deliveries.
+// stream or use up its deliveries. Nothing is stored for it, so a kill at any
+// point here loses nothing: before the ack the message comes back and is
+// skipped again, and the counter, which is per process, counts it once more
+// in whichever instance gets it.
 func skipInvalid(msg jetstream.Msg, reason error, log *slog.Logger) {
 	ack(msg, log)
 	metrics.InvalidEvents.Inc()

@@ -23,8 +23,8 @@ const batch = 100
 const txTimeout = 10 * time.Second
 
 // Run sweeps for due episodes until ctx ends, and settles each in its own
-// transaction. The episode a sweep is settling when shutdown begins is
-// finished; the rest wait for the next start.
+// transaction. When shutdown begins, the episode being settled at that
+// moment still settles; the rest wait for the next start.
 //
 // The first sweep waits for guard, one quiet window: the restart guard. An
 // instance that was down while its episodes' next events queued up in the
