@@ -10,7 +10,7 @@ Only Docker is needed.
 
 | Command | What it does |
 |---|---|
-| `docker compose up` | NATS with JetStream, Postgres and one Panoptes instance; the API is on `localhost:8080` |
+| `docker compose up` | NATS with JetStream, Postgres and one Panoptes instance; the API is on `localhost:8080`, NATS on `localhost:4222` |
 | `make up` / `make down` / `make logs` | the same stack in the background; `down` also removes its data |
 | `make test` | every test, in a Go container, against a separate compose project with its own NATS and Postgres; the stack from `make up` is left alone |
 | `make demo` | publishes a scenario to the running stack and prints each announcement as it arrives; see `cmd/demo` |

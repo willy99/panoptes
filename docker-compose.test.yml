@@ -6,6 +6,9 @@ name: panoptes-test
 services:
   nats:
     extends: { file: docker-compose.yml, service: nats }
+    # The extended service publishes 4222; dropping it lets the test stack run
+    # next to the one from `make up`.
+    ports: !reset []
 
   postgres:
     extends: { file: docker-compose.yml, service: postgres }
