@@ -119,7 +119,7 @@ These rules restate ADR-0002, ADR-0003 and ADR-0005 precisely enough to implemen
 - **Walk.** Sort events by device time, ties by `event_id`. An event joins the current group when its gap to the group's last seen is at most the quiet window and it lies before the group's first seen plus the max duration. Otherwise it starts a new group.
 - **Ended by device time.** An open group that is followed by another episode of the same key, open or settled, has ended by device time. Its pending close reason is `max_duration` when the next episode starts at or after the group's chapter boundary and within one quiet window of its last seen; otherwise it is `quiet`.
 - **Placement of a new event.** Let P be the key's episode with the greatest first seen at or before the event's device time, and N the episode with the smallest first seen after it. P is within reach when the event is no more than one quiet window after P's last seen and before P's chapter boundary. N is within reach when the event is no more than one quiet window before N's first seen and N's last seen minus the event's device time is less than the max duration. The target is P if it is within reach, otherwise N if it is within reach, otherwise none.
-- **Correction.** When the target is settled, the event joins it. Its aggregates are recomputed from its events and its revision rises by one. `settled_at` and the close reason stay as they were, and one corrected announcement is queued.
+- **Correction.** When the target is settled, the event joins it. Its aggregates are recomputed from its events and its revision rises by one. `settled_at` and the close reason stay as they were, and one corrected announcement is queued. The key's open episodes are then rebuilt without the event, because the corrected episode may now start earlier and so change the pending close reason of the open episode before it.
 - **Rebuild.** When the target is open or there is none, all open episodes of the key are rebuilt by the walk. Settled episodes act as fixed dividers, so no open group spans one.
 - **Identity on rebuild.** Groups are visited in device-time order. Each one keeps the id of the old open episode that owned its earliest previously stored event, unless an earlier group already took that id; otherwise it gets a new UUID v4. Old open episodes whose ids no group keeps are deleted.
 - **Aggregates.** First seen, last seen, event count and peak severity by rank are always recomputed from the episode's events, never patched.
@@ -148,12 +148,12 @@ What a kill does at each step: a kill before the commit rolls everything back an
 - The settled payload is the brief's episode object with `episode_id` in place of `id` and no other fields. The corrected payload is the same object plus `revision`.
 - Every instance runs a relay. It claims up to a batch of unpublished rows in id order with `FOR UPDATE SKIP LOCKED`, publishes each to JetStream with `Nats-Msg-Id` and waits for the publish acknowledgement, marks the rows published, and commits.
 - A row can be claimed only when no earlier unpublished row exists for the same episode. A correction therefore never reaches the stream before its episode's settled announcement or an earlier correction, even with several relays.
-- What a kill does at each step: before the publish, the rows stay unpublished and are claimed again. After the publish but before the commit, they are published again with the same message id, and JetStream drops the copy within its duplicate window. A failed publish rolls back the claim and the relay backs off.
+- What a kill does at each step: before the publish, the rows stay unpublished and are claimed again. After the publish but before the commit, they are published again with the same message id, and JetStream drops the copy within its duplicate window. When a publish fails, the rows published before it in the batch are still marked, the rest stay unpublished, and the relay backs off.
 - Published rows are kept, marked with the publish time. Cleaning them up is out of scope.
 
 ### Schema
 
-- **events:** `event_id` primary key, episode key fields, severity rank, device time, attributes as `json` (which keeps the device's text; `jsonb` reorders keys and rejects `\u0000`), arrival time, and the id of the episode it belongs to. Indexed by episode and device time, and by episode key and device time.
+- **events:** `event_id` primary key, episode key fields, severity rank, device time, attributes as `json` (which keeps the device's text; `jsonb` reorders keys and rejects `\u0000`), arrival time, and the id of the episode it belongs to. Indexed by episode and device time; no query reads events by key, so there is no index for that.
 - **episodes:** UUID id, episode key fields, status, first seen, last seen, event count, peak severity rank, close reason, `settled_at`, revision, the latest arrival time among its events, and, for open episodes, the pending close reason when it has ended by device time. Indexed for the list query (first seen and id, descending, with the filters) and with a partial index on open episodes by latest arrival for the settle sweep.
 - **outbox:** serial id, episode id, subject, unique message id, payload, created and published times, with a partial index on unpublished rows.
 - Migrations are plain SQL embedded in the binary and applied at startup under a session advisory lock, each in its own transaction. Concurrent instances therefore never race.
@@ -197,7 +197,7 @@ Durations use Go duration syntax. The quiet window and max duration must be posi
   - `panoptes_publish_failures_total`
   - `panoptes_ingest_duration_seconds`, a histogram
 - Logs: `log/slog` JSON to stdout, one line per invalid event, settle, correction and publish failure. Normal ingest is logged at debug level.
-- Shutdown on SIGTERM or SIGINT: `/readyz` turns 503, fetching stops, in-flight ingest transactions finish and are acknowledged, the settle loop and the relay finish their current unit, the HTTP server shuts down, then NATS drains and the pool closes. The overall deadline is 20 seconds, and compose gives the container 30.
+- Shutdown on SIGTERM or SIGINT: `/readyz` turns 503, fetching stops, in-flight ingest transactions finish and are acknowledged, the settle loop and the relay finish their current unit, the HTTP server shuts down, then the NATS connection closes, which flushes the final acks, and the pool closes. The overall deadline is 20 seconds, and compose gives the container 30.
 
 ### Crash points
 

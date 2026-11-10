@@ -63,14 +63,14 @@ Tests go through two seams only: the process from outside (NATS, HTTP, `/metrics
 ## Assumptions and Trade-offs
 
 **Where the brief is silent or ambiguous, and what I decided**
-- *No skeleton arrived*, so the service provisions `ANALYTICS_EVENTS` and `episoder` itself when they are missing, with the brief's settings: AckWait 30s and MaxDeliver 10, unchanged. Existing ones are used as they are.
+- *No skeleton is provided* (the team confirmed it), so the service provisions `ANALYTICS_EVENTS` and `episoder` itself when they are missing, with the brief's settings: AckWait 30s and MaxDeliver 10, unchanged. Existing ones are used as they are.
 - *Closing a silent camera.* Membership uses `occurred_at` only. Settling measures silence on the Postgres clock, from the arrival of the episode's own latest event, because device time cannot tell that a camera went quiet. An episode that already has a successor settles after `EPISODE_SETTLE_GRACE`, so a chapter cut at the max duration is announced while the camera stays busy. A chapter is cut only by an event at or past its boundary; there is no timer.
 - *Late events* go where a device-time walk puts them. If that episode has settled, the event becomes a correction: aggregates change, `revision` rises, one `episode.corrected.*` message. `episode.settled.*` is never repeated. Settled episodes never merge or split, so a correction can leave two episodes closer than the quiet window.
 - *Exactly once* holds for JetStream readers within the 2-minute duplicate window of `EPISODES`. A core NATS subscriber can see a copy after a kill between publish and commit. `EPISODES` is created only for subjects no other stream covers.
 - *Duplicates:* the first stored copy of an `event_id` wins, even with a different payload.
 - *Payload vs subject:* the payload wins, with a warning in the log. A `site_id` or `camera_id` that cannot be a NATS token is invalid.
 - *Invalid events* are counted and logged, not stored. Invalid also covers invalid UTF-8, U+0000, ids over 255 bytes and non-RFC 3339 times. Leap seconds are refused.
-- *Formats:* times are stored to the microsecond and returned in UTC with milliseconds, or microseconds when present. `attributes` come back byte for byte, apart from whitespace.
+- *Formats:* times are UTC with milliseconds, as in the brief. Device times keep microseconds when a device sends them. `settled_at` is cut to the millisecond. `attributes` come back byte for byte, apart from whitespace.
 - *API rules:* empty parameters count as absent, `limit` above 200 is clamped, and bad values get 400. The cursor is opaque. Pages are stable only for episodes that do not change meanwhile; an open episode merged into another returns 404.
 - *Restart guard:* an instance settles nothing for one quiet window after it starts, so that it reads the events that queued up while it was down. A backlog that takes longer than that to read can still settle an episode early; its late events then become corrections.
 - *Postgres outage:* ingest pauses and `/readyz` says 503. Checked by hand with Postgres down for 57s: nothing was lost, and no message used more than two deliveries.
